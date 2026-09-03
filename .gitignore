@@ -1,0 +1,24 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+*.pyc
+
+# Captured sweep data
+data/*.bin
+data/*.csv
+data/*.json
+!data/.gitkeep
+
+# OS / editor
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/

@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Orbio BioSensor BLE — Phase 1</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="top">
+      <div>
+        <p class="eyebrow">Orbio Health</p>
+        <h1>BioSensor BLE capture</h1>
+      </div>
+      <div class="badges">
+        <span id="backend-badge" class="badge">backend</span>
+        <span id="link-badge" class="badge">disconnected</span>
+      </div>
+    </header>
+
+    <main class="grid">
+      <section class="card">
+        <h2>Device</h2>
+        <p class="hint">
+          Advertised name is <code>Orbio-</code> plus 6 characters from the Bluetooth ID.
+          The remote only advertises just before a sweep (default 30 s sweep, 10 min sleep).
+        </p>
+        <div class="row">
+          <label>
+            Scan seconds
+            <input id="scan-timeout" type="number" min="1" max="600" value="12" />
+          </label>
+          <button id="scan-btn" type="button">Scan</button>
+          <button id="disconnect-btn" type="button" disabled>Disconnect</button>
+        </div>
+        <ul id="device-list" class="devices"></ul>
+        <dl id="device-meta" class="meta"></dl>
+      </section>
+
+      <section class="card">
+        <h2>Stream</h2>
+        <p class="hint">
+          After connect, notifications are enabled automatically. Start a sweep to pull
+          4992-byte I/Q frames (39 frequencies × 32 samples) onto this PC.
+        </p>
+        <div class="meter">
+          <div id="meter-fill"></div>
+        </div>
+        <p id="meter-label" class="meter-label">0 / 4992 bytes</p>
+        <div class="row">
+          <button id="start-btn" type="button" disabled>Start sweep (1)</button>
+          <button id="stop-btn" type="button" disabled>Stop sweep (2)</button>
+        </div>
+        <dl id="sweep-meta" class="meta"></dl>
+      </section>
+
+      <section class="card">
+        <h2>Control</h2>
+        <p class="hint">
+          Writes ASCII to Set Parameters
+          (<code>f48a06b7-9f70-48bb-ba71-2e5edc537e59</code>).
+        </p>
+        <div class="row">
+          <input id="raw-command" type="text" placeholder="e.g. 4,830 or 7,30,600" />
+          <button id="send-btn" type="button" disabled>Send</button>
+        </div>
+        <ul class="commands">
+          <li><code>1</code> start sweep</li>
+          <li><code>2</code> stop sweep</li>
+          <li><code>3,-100,200</code> I/Q offsets mV</li>
+          <li><code>4,830</code> frequency MHz</li>
+          <li><code>6,1,7</code> LNA, VGA</li>
+          <li><code>7,30,600</code> sweep s, interval s</li>
+          <li><code>9,10</code> PLL gain dB</li>
+        </ul>
+      </section>
+
+      <section class="card log-card">
+        <h2>Log</h2>
+        <pre id="log" class="log"></pre>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
