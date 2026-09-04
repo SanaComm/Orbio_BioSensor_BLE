@@ -9,7 +9,7 @@ from typing import Any, Awaitable, Callable
 
 from orbio.assembler import SweepAssembler
 from orbio.capture import SweepRecord, save_sweep
-from orbio.protocol import parse_fw_id, parse_report_parameters
+from orbio.protocol import is_orbio_advertised_name, parse_fw_id, parse_report_parameters
 from orbio.radio import BleakBackend, DeviceInfo, RadioBackend, SimulatorBackend
 
 EventHandler = Callable[[str, dict[str, Any]], Awaitable[None] | None]
@@ -29,6 +29,7 @@ class SessionStatus:
     sweep_count: int = 0
     last_sweep: SweepRecord | None = None
     devices: list[DeviceInfo] = field(default_factory=list)
+    watching: bool = False
 
 
 class CaptureSession:
@@ -38,7 +39,10 @@ class CaptureSession:
         self.assembler = SweepAssembler()
         self.status = SessionStatus(backend="simulator" if simulate else "bleak")
         self._handlers: list[EventHandler] = []
-        self._scan_task: asyncio.Task | None = None
+        self._watch_task: asyncio.Task | None = None
+        self._watch_stop = asyncio.Event()
+        self._watch_pass_s = 20.0
+        self._watch_name = "Orbio"
         self._sweep_index = 0
         try:
             self._loop = asyncio.get_running_loop()
@@ -55,35 +59,146 @@ class CaptureSession:
     async def scan(self, timeout_s: float = 8.0) -> list[DeviceInfo]:
         if self.status.connected:
             raise RuntimeError("Disconnect before scanning")
+        if self.status.watching:
+            raise RuntimeError("A scan is already running")
         self.status.scanning = True
-        await self._emit("log", {"message": f"Scanning for Orbio-* devices ({timeout_s:.0f}s)..."})
+        await self._emit("status", self.public_status())
         try:
             devices = await self.backend.scan(timeout_s)
             self.status.devices = devices
-            await self._emit(
-                "devices",
-                {"devices": [asdict(device) for device in devices]},
-            )
-            if devices:
-                await self._emit("log", {"message": f"Found {len(devices)} device(s)"})
-            else:
-                await self._emit(
-                    "log",
-                    {
-                        "message": (
-                            "No Orbio-* advertisements yet. The device only advertises "
-                            "just before a sweep (default 30s sweep / 10 min sleep)."
-                        )
-                    },
-                )
+            await self._emit("devices", {"devices": [asdict(device) for device in devices]})
             return devices
         finally:
             self.status.scanning = False
             await self._emit("status", self.public_status())
 
+    def _cancel_backend_scan(self) -> None:
+        cancel = getattr(self.backend, "cancel_scan", None)
+        if callable(cancel):
+            cancel()
+
+    async def start_watch(self, name_contains: str = "Orbio", pass_s: float = 20.0) -> None:
+        if self.status.connected:
+            return
+        if self._watch_task is not None and not self._watch_task.done():
+            return
+        needle = name_contains.strip() or "Orbio"
+        self._watch_name = needle
+        self._watch_pass_s = pass_s
+        self._watch_stop = asyncio.Event()
+        self._watch_task = asyncio.create_task(self._watch_loop(needle, pass_s))
+
+    async def stop_watch(self) -> None:
+        self._watch_stop.set()
+        self._cancel_backend_scan()
+        task = self._watch_task
+        self._watch_task = None
+        if task is not None and not task.done():
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    async def _watch_loop(self, name_contains: str, pass_s: float) -> None:
+        needle = name_contains.lower()
+        self.status.scanning = True
+        self.status.watching = True
+        await self._emit("status", self.public_status())
+        await self._emit(
+            "log",
+            {
+                "message": (
+                    f"Looking for advertised names containing '{name_contains}'. "
+                    "This keeps scanning until one appears; the remote only advertises "
+                    f"just before a sweep. Each pass is {pass_s:.0f}s."
+                )
+            },
+        )
+        announced: set[str] = set()
+        adapter_logged = False
+        pass_no = 0
+        try:
+            while not self._watch_stop.is_set():
+                pass_no += 1
+                started = time.monotonic()
+                try:
+                    devices = await self.backend.scan(pass_s)
+                except ConnectionError as exc:
+                    if self._watch_stop.is_set():
+                        break
+                    await self._emit("log", {"message": f"Scan pass {pass_no} failed: {exc}. Retrying…"})
+                    await asyncio.sleep(2)
+                    continue
+
+                if self._watch_stop.is_set():
+                    break
+
+                if not adapter_logged:
+                    adapter = getattr(self.backend, "last_scan_note", None)
+                    if isinstance(adapter, dict) and adapter.get("extended_advertising_supported") is not None:
+                        await self._emit(
+                            "log",
+                            {
+                                "message": (
+                                    "PC Bluetooth adapter: extended advertising "
+                                    f"{'YES' if adapter.get('extended_advertising_supported') else 'NO'}"
+                                )
+                            },
+                        )
+                        adapter_logged = True
+
+                hits = [
+                    device
+                    for device in devices
+                    if is_orbio_advertised_name(device.name) or (device.name and needle in device.name.lower())
+                ]
+                if hits:
+                    self.status.devices = hits
+                    await self._emit("devices", {"devices": [asdict(device) for device in hits]})
+                    for device in hits:
+                        if device.address in announced:
+                            continue
+                        announced.add(device.address)
+                        rssi = f"{device.rssi} dBm" if device.rssi is not None else "RSSI unknown"
+                        await self._emit(
+                            "log",
+                            {
+                                "message": (
+                                    f"Found {device.name}  {device.address}  {rssi}. "
+                                    "Click Connect on that row."
+                                )
+                            },
+                        )
+                elif not self.status.devices:
+                    await self._emit(
+                        "log",
+                        {
+                            "message": (
+                                f"No '{name_contains}' advertisement in pass {pass_no}. "
+                                "Continuing…"
+                            )
+                        },
+                    )
+
+                remaining = pass_s - (time.monotonic() - started)
+                if remaining > 0.5 and not self._watch_stop.is_set():
+                    try:
+                        await asyncio.wait_for(self._watch_stop.wait(), timeout=remaining)
+                    except asyncio.TimeoutError:
+                        pass
+        finally:
+            self.status.scanning = False
+            self.status.watching = False
+            await self._emit("status", self.public_status())
+
     async def connect(self, address: str) -> None:
+        await self.stop_watch()
         await self._emit("log", {"message": f"Connecting to {address}..."})
-        device = await self.backend.connect(address)
+        try:
+            device = await self.backend.connect(address)
+        except Exception:
+            await self.start_watch(self._watch_name, self._watch_pass_s)
+            raise
         known = next((item for item in self.status.devices if item.address == address), None)
         if known is not None:
             device = DeviceInfo(
@@ -125,7 +240,7 @@ class CaptureSession:
         )
         await self._emit("status", self.public_status())
 
-    async def disconnect(self) -> None:
+    async def disconnect(self, resume_watch: bool = True) -> None:
         try:
             if self.status.notifications:
                 await self.backend.stop_notify()
@@ -137,6 +252,8 @@ class CaptureSession:
             self.assembler.reset()
             await self._emit("log", {"message": "Disconnected"})
             await self._emit("status", self.public_status())
+            if resume_watch:
+                await self.start_watch(self._watch_name, self._watch_pass_s)
 
     async def send_command(self, command: str) -> None:
         if not self.status.connected:
@@ -160,6 +277,7 @@ class CaptureSession:
             "sweep_count": self.status.sweep_count,
             "last_sweep": last,
             "devices": [asdict(item) for item in self.status.devices],
+            "watching": self.status.watching,
         }
 
     def _on_notify(self, _handle: int | bytearray, data: bytearray | None = None) -> None:

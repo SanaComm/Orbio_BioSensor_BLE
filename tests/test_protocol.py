@@ -1,7 +1,7 @@
 import struct
 
 from orbio.assembler import SweepAssembler
-from orbio.protocol import FREQ_MHZ, N_SAMPLES, SWEEP_BYTES, encode_parameter_write, parse_sweep
+from orbio.protocol import FREQ_MHZ, N_SAMPLES, SWEEP_BYTES, encode_parameter_write, is_orbio_advertised_name, parse_sweep
 from orbio.radio import _fake_sweep
 
 
@@ -48,3 +48,11 @@ def test_assembler_drops_stale_partial() -> None:
 
 def test_encode_command() -> None:
     assert encode_parameter_write("3,-100,200") == b"3,-100,200"
+
+
+def test_orbio_name_filter() -> None:
+    assert is_orbio_advertised_name("Orbio-EADB17")
+    assert is_orbio_advertised_name("orbio-sim001")
+    assert not is_orbio_advertised_name("Apple TV")
+    assert not is_orbio_advertised_name(None)
+    assert not is_orbio_advertised_name("")

@@ -143,12 +143,12 @@ button:disabled {
   margin: 14px 0 0;
 }
 
-.devices li {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 0;
-  border-top: 1px solid var(--line);
+.devices li.likely-orbio {
+  border-color: var(--accent);
+}
+
+.devices li.likely-orbio strong {
+  color: var(--accent);
 }
 
 .devices button {

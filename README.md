@@ -18,7 +18,7 @@ python -m orbio.app
 
 That opens `http://127.0.0.1:8765/`.
 
-Without hardware, add `--simulate`. Scan, Connect, then **Start sweep**. Fake 4992-byte frames are written under `data\`.
+Without hardware, add `--simulate`. The fake `Orbio-sim001` device appears automatically; Connect, then **Start sweep**. Fake 4992-byte frames are written under `data\`.
 
 ## How the remote behaves
 

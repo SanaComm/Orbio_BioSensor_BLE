@@ -28,6 +28,11 @@ class ConnectRequest(BaseModel):
     address: str
 
 
+class WatchRequest(BaseModel):
+    name_contains: str = "Orbio"
+    pass_s: float = Field(default=20.0, ge=5.0, le=120.0)
+
+
 class CommandRequest(BaseModel):
     command: str
 
@@ -68,9 +73,11 @@ async def lifespan(app: FastAPI):
     session = CaptureSession(simulate=simulate)
     session.add_handler(broadcast)
     state.session = session
+    await session.start_watch()
     yield
+    await session.stop_watch()
     if session.status.connected:
-        await session.disconnect()
+        await session.disconnect(resume_watch=False)
     state.session = None
 
 
@@ -97,9 +104,27 @@ async def scan(body: ScanRequest) -> dict[str, Any]:
     async with state.lock:
         try:
             devices = await _session().scan(body.timeout_s)
-        except (RuntimeError, ConnectionError, ValueError) as exc:
+        except (RuntimeError, ConnectionError, ValueError, OSError) as exc:
             raise _http_error(exc) from exc
     return {"devices": [asdict(device) for device in devices]}
+
+
+@app.post("/api/watch")
+async def watch(body: WatchRequest) -> dict[str, Any]:
+    try:
+        await _session().start_watch(
+            name_contains=body.name_contains,
+            pass_s=body.pass_s,
+        )
+    except (RuntimeError, ConnectionError, ValueError, OSError) as exc:
+        raise _http_error(exc) from exc
+    return _session().public_status()
+
+
+@app.post("/api/watch/stop")
+async def watch_stop() -> dict[str, str]:
+    await _session().stop_watch()
+    return {"ok": "true"}
 
 
 @app.post("/api/connect")
@@ -107,7 +132,7 @@ async def connect(body: ConnectRequest) -> dict[str, Any]:
     async with state.lock:
         try:
             await _session().connect(body.address)
-        except (RuntimeError, ConnectionError, ValueError) as exc:
+        except (RuntimeError, ConnectionError, ValueError, OSError) as exc:
             raise _http_error(exc) from exc
     return _session().public_status()
 
@@ -117,7 +142,7 @@ async def disconnect() -> dict[str, Any]:
     async with state.lock:
         try:
             await _session().disconnect()
-        except (RuntimeError, ConnectionError, ValueError) as exc:
+        except (RuntimeError, ConnectionError, ValueError, OSError) as exc:
             raise _http_error(exc) from exc
     return _session().public_status()
 
@@ -127,7 +152,7 @@ async def command(body: CommandRequest) -> dict[str, str]:
     async with state.lock:
         try:
             await _session().send_command(body.command)
-        except (RuntimeError, ConnectionError, ValueError) as exc:
+        except (RuntimeError, ConnectionError, ValueError, OSError) as exc:
             raise _http_error(exc) from exc
     return {"ok": "true", "command": body.command}
 

@@ -17,6 +17,7 @@ from orbio.protocol import (
     SWEEP_BYTES,
     SWEEP_DATA_UUID,
     encode_parameter_write,
+    is_orbio_advertised_name,
 )
 
 NotifyCallback = Callable[..., None]
@@ -28,6 +29,7 @@ class DeviceInfo:
     address: str
     rssi: int | None = None
     simulated: bool = False
+    likely_orbio: bool = False
 
 
 class RadioBackend(Protocol):
@@ -45,26 +47,81 @@ class BleakBackend:
     def __init__(self) -> None:
         self._client = None
         self._connected: DeviceInfo | None = None
+        self._scan_proc = None
+        self.last_scan_note = None
+
+    def cancel_scan(self) -> None:
+        proc = self._scan_proc
+        if proc is not None and proc.returncode is None:
+            proc.kill()
 
     async def scan(self, timeout_s: float) -> list[DeviceInfo]:
-        from bleak import BleakScanner
+        import json
+        import sys
+        from pathlib import Path
 
         found: dict[str, DeviceInfo] = {}
+        kwargs: dict = {
+            "stdout": asyncio.subprocess.PIPE,
+            "stderr": asyncio.subprocess.PIPE,
+            "cwd": str(Path(__file__).resolve().parent.parent),
+        }
+        if sys.platform == "win32":
+            kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
 
-        def _on_detect(device, advertisement) -> None:
-            name = device.name or advertisement.local_name
-            if not name or not name.startswith(DEVICE_NAME_PREFIX):
-                return
-            rssi = advertisement.rssi if advertisement.rssi is not None else getattr(device, "rssi", None)
-            found[device.address] = DeviceInfo(name=name, address=device.address, rssi=rssi)
-
-        scanner = BleakScanner(detection_callback=_on_detect)
-        await scanner.start()
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "orbio.ble_scan",
+            str(timeout_s),
+            **kwargs,
+        )
+        self._scan_proc = proc
         try:
-            await asyncio.sleep(timeout_s)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s + 20)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise ConnectionError("BLE scan timed out") from None
         finally:
-            await scanner.stop()
-        return sorted(found.values(), key=lambda item: item.name or item.address)
+            self._scan_proc = None
+
+        if proc.returncode != 0:
+            detail = stderr.decode("utf-8", errors="replace").strip()
+            raise ConnectionError(detail or f"BLE scan exited with code {proc.returncode}")
+
+        try:
+            payload = json.loads(stdout.decode("utf-8") or "[]")
+        except json.JSONDecodeError as exc:
+            raise ConnectionError(f"BLE scan returned invalid data: {exc}") from exc
+
+        if isinstance(payload, dict):
+            self.last_scan_note = payload.get("adapter")
+            rows = payload.get("devices") or []
+        else:
+            self.last_scan_note = None
+            rows = payload
+
+        for row in rows:
+            name = row.get("name")
+            if not is_orbio_advertised_name(name):
+                continue
+            address = row.get("address")
+            if not address:
+                continue
+            found[address] = DeviceInfo(
+                name=name,
+                address=address,
+                rssi=row.get("rssi"),
+                likely_orbio=True,
+            )
+
+        def _sort_key(item: DeviceInfo) -> tuple:
+            orbio = 0 if item.likely_orbio or (item.name or "").startswith(DEVICE_NAME_PREFIX) else 1
+            strength = -(item.rssi if item.rssi is not None else -999)
+            return (orbio, strength, (item.name or item.address).lower())
+
+        return sorted(found.values(), key=_sort_key)
 
     async def connect(self, address: str) -> DeviceInfo:
         from bleak import BleakClient
@@ -127,7 +184,13 @@ class SimulatorBackend:
     async def scan(self, timeout_s: float) -> list[DeviceInfo]:
         await asyncio.sleep(min(timeout_s, 0.4))
         return [
-            DeviceInfo(name="Orbio-sim001", address="SIM:00:00:00:00:01", rssi=-47, simulated=True)
+            DeviceInfo(
+                name="Orbio-sim001",
+                address="SIM:00:00:00:00:01",
+                rssi=-47,
+                simulated=True,
+                likely_orbio=True,
+            )
         ]
 
     async def connect(self, address: str) -> DeviceInfo:

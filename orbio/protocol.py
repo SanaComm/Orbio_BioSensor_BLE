@@ -6,6 +6,10 @@ from dataclasses import dataclass
 
 DEVICE_NAME_PREFIX = "Orbio-"
 
+
+def is_orbio_advertised_name(name: str | None) -> bool:
+    return bool(name and "orbio" in name.lower())
+
 DATA_SERVICE_UUID = "87fa031b-ba2d-48c2-9a29-3a627f913b4a"
 SWEEP_DATA_UUID = "abacd824-160e-4c85-ad02-67483ad42060"
 

@@ -6,12 +6,11 @@ const meterFill = document.getElementById("meter-fill");
 const meterLabel = document.getElementById("meter-label");
 const backendBadge = document.getElementById("backend-badge");
 const linkBadge = document.getElementById("link-badge");
-const scanBtn = document.getElementById("scan-btn");
+const pauseBtn = document.getElementById("pause-btn");
 const disconnectBtn = document.getElementById("disconnect-btn");
 const startBtn = document.getElementById("start-btn");
 const stopBtn = document.getElementById("stop-btn");
 const sendBtn = document.getElementById("send-btn");
-const scanTimeout = document.getElementById("scan-timeout");
 const rawCommand = document.getElementById("raw-command");
 
 function log(message) {
@@ -21,8 +20,9 @@ function log(message) {
 }
 
 async function api(path, body) {
-  const options = { method: body ? "POST" : "GET", headers: {} };
-  if (body) {
+  const post = body !== undefined;
+  const options = { method: post ? "POST" : "GET", headers: {} };
+  if (post) {
     options.headers["Content-Type"] = "application/json";
     options.body = JSON.stringify(body);
   }
@@ -47,24 +47,26 @@ function setMeta(target, entries) {
   }
 }
 
-function renderDevices(devices, connected) {
+function renderDevices(devices, connected, watching) {
   deviceList.innerHTML = "";
   if (!devices || devices.length === 0) {
     const empty = document.createElement("li");
-    empty.textContent = "No devices yet. Scan while the remote is advertising.";
+    empty.textContent = watching
+      ? "Looking for an advertised name containing Orbio…"
+      : "Looking is paused. Resume to keep waiting for the remote.";
     deviceList.append(empty);
     return;
   }
-    for (const device of devices) {
+  for (const device of devices) {
     const item = document.createElement("li");
     const label = document.createElement("div");
     const title = document.createElement("strong");
-    title.textContent = device.name || "Unknown";
+    title.textContent = device.name || "(no name)";
+    if (device.likely_orbio) item.classList.add("likely-orbio");
     const detail = document.createElement("div");
     detail.className = "hint";
-    detail.textContent = `${device.address}${device.rssi != null ? ` · ${device.rssi} dBm` : ""}${
-      device.simulated ? " · simulator" : ""
-    }`;
+    const rssi = device.rssi != null ? `RSSI ${device.rssi} dBm` : "RSSI unknown";
+    detail.textContent = `${device.address} · ${rssi}${device.simulated ? " · simulator" : ""}`;
     label.append(title, detail);
     const button = document.createElement("button");
     button.textContent = "Connect";
@@ -77,13 +79,22 @@ function renderDevices(devices, connected) {
 
 function renderStatus(status) {
   backendBadge.textContent = status.backend === "simulator" ? "simulator" : "live BLE";
-  linkBadge.textContent = status.connected ? "connected" : status.scanning ? "scanning" : "disconnected";
-  linkBadge.classList.toggle("on", Boolean(status.connected));
+  const watching = Boolean(status.watching);
+  const scanning = Boolean(status.scanning);
+  linkBadge.textContent = status.connected
+    ? "connected"
+    : watching
+      ? "looking"
+      : scanning
+        ? "scanning"
+        : "disconnected";
+  linkBadge.classList.toggle("on", Boolean(status.connected || watching));
   disconnectBtn.disabled = !status.connected;
   startBtn.disabled = !status.connected;
   stopBtn.disabled = !status.connected;
   sendBtn.disabled = !status.connected;
-  scanBtn.disabled = Boolean(status.connected || status.scanning);
+  pauseBtn.disabled = Boolean(status.connected);
+  pauseBtn.textContent = watching ? "Pause looking" : "Resume looking";
 
   const buffered = status.buffered_bytes || 0;
   const expected = status.expected_bytes || 4992;
@@ -109,17 +120,16 @@ function renderStatus(status) {
     ]);
   }
 
-  if (status.devices) renderDevices(status.devices, status.connected);
+  if (status.devices) renderDevices(status.devices, status.connected, watching);
 }
 
-async function scan() {
+async function toggleLooking() {
+  const resume = pauseBtn.textContent.includes("Resume");
   try {
-    log("Scanning...");
-    const timeout_s = Number(scanTimeout.value || 12);
-    const result = await api("/api/scan", { timeout_s });
-    renderDevices(result.devices || [], false);
+    if (resume) await api("/api/watch", { name_contains: "Orbio", pass_s: 20 });
+    else await api("/api/watch/stop", {});
   } catch (error) {
-    log(`Scan failed: ${error.message}`);
+    log(`${resume ? "Resume" : "Pause"} failed: ${error.message}`);
   }
 }
 
@@ -135,7 +145,7 @@ async function connect(address) {
 
 async function disconnect() {
   try {
-    const status = await api("/api/disconnect");
+    const status = await api("/api/disconnect", {});
     renderStatus(status);
   } catch (error) {
     log(`Disconnect failed: ${error.message}`);
@@ -150,7 +160,7 @@ async function send(command) {
   }
 }
 
-scanBtn.addEventListener("click", scan);
+pauseBtn.addEventListener("click", toggleLooking);
 disconnectBtn.addEventListener("click", disconnect);
 startBtn.addEventListener("click", () => send("1"));
 stopBtn.addEventListener("click", () => send("2"));
@@ -164,7 +174,7 @@ socket.addEventListener("message", (event) => {
   const message = JSON.parse(event.data);
   if (message.event === "log") log(message.payload.message);
   if (message.event === "status") renderStatus(message.payload);
-  if (message.event === "devices") renderDevices(message.payload.devices || [], false);
+  if (message.event === "devices") renderDevices(message.payload.devices || [], false, true);
   if (message.event === "packet") {
     const buffered = message.payload.buffered_bytes || 0;
     const expected = message.payload.expected_bytes || 4992;
@@ -181,6 +191,11 @@ socket.addEventListener("message", (event) => {
   }
 });
 socket.addEventListener("open", () => log("UI connected to local capture service"));
-socket.addEventListener("close", () => log("UI lost the local capture service"));
+socket.addEventListener("close", () => {
+  log("UI lost the local capture service. Restart python -m orbio.app, then refresh this page.");
+});
+socket.addEventListener("error", () => {
+  log("Capture service is not reachable. Is python -m orbio.app still running?");
+});
 
 api("/api/status").then(renderStatus).catch((error) => log(error.message));

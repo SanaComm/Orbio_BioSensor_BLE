@@ -22,15 +22,14 @@
       <section class="card">
         <h2>Device</h2>
         <p class="hint">
-          Advertised name is <code>Orbio-</code> plus 6 characters from the Bluetooth ID.
-          The remote only advertises just before a sweep (default 30 s sweep, 10 min sleep).
+          The app looks continuously for an advertised name containing
+          <code>Orbio</code>. The remote only advertises just before a sweep
+          (default 30 s sweep / 10 min sleep), so this keeps looping until it
+          appears. Phone/iPad should be disconnected from the sensor while this
+          PC looks. Click <strong>Connect</strong> on the named row when it shows up.
         </p>
         <div class="row">
-          <label>
-            Scan seconds
-            <input id="scan-timeout" type="number" min="1" max="600" value="12" />
-          </label>
-          <button id="scan-btn" type="button">Scan</button>
+          <button id="pause-btn" type="button">Pause looking</button>
           <button id="disconnect-btn" type="button" disabled>Disconnect</button>
         </div>
         <ul id="device-list" class="devices"></ul>
@@ -81,6 +80,6 @@
       </section>
     </main>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=2"></script>
   </body>
 </html>
