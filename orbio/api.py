@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from orbio.capture import clear_capture_files, list_memories, load_latest_sweep, load_memory, save_memory
 from orbio.session import CaptureSession
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -35,6 +36,18 @@ class WatchRequest(BaseModel):
 
 class CommandRequest(BaseModel):
     command: str
+
+
+class MemorySaveRequest(BaseModel):
+    slot: int = Field(ge=1, le=5)
+    points: list[dict[str, int]]
+    device_name: str | None = None
+    device_address: str | None = None
+    source: str | None = None
+
+
+class MemorySlotRequest(BaseModel):
+    slot: int = Field(ge=1, le=5)
 
 
 class AppState:
@@ -87,12 +100,57 @@ app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
 @app.get("/")
 async def index() -> FileResponse:
-    return FileResponse(WEB_DIR / "index.html")
+    return FileResponse(
+        WEB_DIR / "index.html",
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
 
 
 @app.get("/api/status")
 async def status() -> dict[str, Any]:
     return _session().public_status()
+
+
+@app.get("/api/last-sweep")
+async def last_sweep() -> dict[str, Any]:
+    payload = load_latest_sweep()
+    if payload is None:
+        raise HTTPException(status_code=404, detail="No captured sweep files in data/")
+    return payload
+
+
+@app.get("/api/memories")
+async def memories() -> dict[str, Any]:
+    return {"memories": list_memories()}
+
+
+@app.post("/api/memory/save")
+async def memory_save(body: MemorySaveRequest) -> dict[str, Any]:
+    try:
+        return save_memory(
+            body.slot,
+            body.points,
+            {
+                "device_name": body.device_name,
+                "device_address": body.device_address,
+                "source": body.source,
+            },
+        )
+    except ValueError as exc:
+        raise _http_error(exc) from exc
+
+
+@app.post("/api/memory/recall")
+async def memory_recall(body: MemorySlotRequest) -> dict[str, Any]:
+    try:
+        return load_memory(body.slot)
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_error(exc) from exc
+
+
+@app.post("/api/data/clear")
+async def data_clear() -> dict[str, Any]:
+    return clear_capture_files()
 
 
 def _http_error(exc: Exception) -> HTTPException:

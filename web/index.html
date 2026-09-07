@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Orbio BioSensor BLE — Phase 1</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=13" />
   </head>
   <body>
     <header class="top">
@@ -12,74 +12,85 @@
         <p class="eyebrow">Orbio Health</p>
         <h1>BioSensor BLE capture</h1>
       </div>
-      <div class="badges">
-        <span id="backend-badge" class="badge">backend</span>
-        <span id="link-badge" class="badge">disconnected</span>
-      </div>
     </header>
 
-    <main class="grid">
-      <section class="card">
-        <h2>Device</h2>
-        <p class="hint">
-          The app looks continuously for an advertised name containing
-          <code>Orbio</code>. The remote only advertises just before a sweep
-          (default 30 s sweep / 10 min sleep), so this keeps looping until it
-          appears. Phone/iPad should be disconnected from the sensor while this
-          PC looks. Click <strong>Connect</strong> on the named row when it shows up.
-        </p>
-        <div class="row">
-          <button id="pause-btn" type="button">Pause looking</button>
-          <button id="disconnect-btn" type="button" disabled>Disconnect</button>
-        </div>
-        <ul id="device-list" class="devices"></ul>
-        <dl id="device-meta" class="meta"></dl>
-      </section>
+    <main class="layout">
+      <div class="toolbar">
+        <section class="card device-card">
+          <h2>Device</h2>
+          <div class="device-body">
+            <div class="device-actions">
+              <span id="conn-indicator" class="conn-indicator off">Not Connected</span>
+              <button id="pause-btn" type="button">Pause looking</button>
+              <button id="disconnect-btn" type="button" disabled>Disconnect</button>
+            </div>
+            <div>
+              <ul id="device-list" class="devices"></ul>
+              <dl id="device-meta" class="meta"></dl>
+            </div>
+          </div>
+        </section>
 
-      <section class="card">
-        <h2>Stream</h2>
-        <p class="hint">
-          After connect, notifications are enabled automatically. Start a sweep to pull
-          4992-byte I/Q frames (39 frequencies × 32 samples) onto this PC.
-        </p>
-        <div class="meter">
-          <div id="meter-fill"></div>
-        </div>
-        <p id="meter-label" class="meter-label">0 / 4992 bytes</p>
-        <div class="row">
-          <button id="start-btn" type="button" disabled>Start sweep (1)</button>
-          <button id="stop-btn" type="button" disabled>Stop sweep (2)</button>
-        </div>
-        <dl id="sweep-meta" class="meta"></dl>
-      </section>
+        <section class="card stream-card">
+          <h2>Stream</h2>
+          <div class="stream-top">
+            <div class="meter">
+              <div id="meter-fill"></div>
+            </div>
+            <div class="row stream-actions">
+              <button id="start-btn" type="button" disabled>Start sweep (1)</button>
+              <button id="stop-btn" type="button" disabled>Stop sweep (2)</button>
+            </div>
+            <p id="meter-label" class="meter-label">0 / 4992 bytes</p>
+          </div>
+          <dl id="sweep-meta" class="meta"></dl>
+        </section>
 
-      <section class="card">
-        <h2>Control</h2>
-        <p class="hint">
-          Writes ASCII to Set Parameters
-          (<code>f48a06b7-9f70-48bb-ba71-2e5edc537e59</code>).
-        </p>
-        <div class="row">
-          <input id="raw-command" type="text" placeholder="e.g. 4,830 or 7,30,600" />
-          <button id="send-btn" type="button" disabled>Send</button>
-        </div>
-        <ul class="commands">
-          <li><code>1</code> start sweep</li>
-          <li><code>2</code> stop sweep</li>
-          <li><code>3,-100,200</code> I/Q offsets mV</li>
-          <li><code>4,830</code> frequency MHz</li>
-          <li><code>6,1,7</code> LNA, VGA</li>
-          <li><code>7,30,600</code> sweep s, interval s</li>
-          <li><code>9,10</code> PLL gain dB</li>
-        </ul>
-      </section>
+        <section class="card control-card">
+          <h2>Control</h2>
+          <div class="row">
+            <input id="raw-command" type="text" placeholder="e.g. 4,830 or 7,30,600" />
+            <button id="send-btn" type="button" disabled>Send</button>
+          </div>
+          <ul class="commands">
+            <li><code>1</code> start sweep</li>
+            <li><code>2</code> stop sweep</li>
+            <li><code>3,-100,200</code> I/Q offsets mV</li>
+            <li><code>4,830</code> frequency MHz</li>
+            <li><code>6,1,7</code> LNA, VGA</li>
+            <li><code>7,30,600</code> sweep s, interval s</li>
+            <li><code>9,10</code> PLL gain dB</li>
+          </ul>
+        </section>
+      </div>
 
       <section class="card log-card">
         <h2>Log</h2>
         <pre id="log" class="log"></pre>
       </section>
+
+      <section class="card plot-card">
+        <div class="plot-head">
+          <h2>I / Q</h2>
+          <div class="plot-actions">
+            <button id="clear-iq-btn" type="button">Clear Plot</button>
+            <button id="clear-data-btn" type="button">Clear Data</button>
+            <select id="memory-slot" aria-label="Memory slot"></select>
+            <button id="save-mem-btn" type="button">Save</button>
+            <button id="recall-mem-btn" type="button">Recall</button>
+          </div>
+        </div>
+        <div class="plot-wrap">
+          <canvas id="iq-plot" width="480" height="480"></canvas>
+        </div>
+        <div id="iq-legend" class="iq-legend">
+          <span>700 MHz</span>
+          <span class="iq-legend-bar"></span>
+          <span>1080 MHz</span>
+        </div>
+      </section>
     </main>
 
-    <script src="/static/app.js?v=2"></script>
+    <script src="/static/app.js?v=13"></script>
   </body>
 </html>

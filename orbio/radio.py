@@ -8,7 +8,9 @@ from dataclasses import dataclass
 from typing import Callable, Protocol
 
 from orbio.protocol import (
+    CONTROL_SERVICE_UUID,
     DEVICE_NAME_PREFIX,
+    DATA_SERVICE_UUID,
     FREQ_MHZ,
     N_SAMPLES,
     REPORT_FW_ID_UUID,
@@ -22,6 +24,14 @@ from orbio.protocol import (
 
 NotifyCallback = Callable[..., None]
 
+CONNECT_TIMEOUT_S = 45.0
+FIND_TIMEOUT_S = 12.0
+ORBIO_GATT_SERVICES = (DATA_SERVICE_UUID, CONTROL_SERVICE_UUID)
+
+
+def _normalize_ble_address(address: str) -> str:
+    return address.replace("-", "").replace(":", "").upper()
+
 
 @dataclass(frozen=True)
 class DeviceInfo:
@@ -34,7 +44,12 @@ class DeviceInfo:
 
 class RadioBackend(Protocol):
     async def scan(self, timeout_s: float) -> list[DeviceInfo]: ...
-    async def connect(self, address: str) -> DeviceInfo: ...
+    async def connect(
+        self,
+        address: str,
+        name: str | None = None,
+        wait_for_advertisement: bool = True,
+    ) -> DeviceInfo: ...
     async def disconnect(self) -> None: ...
     async def start_notify(self, callback: NotifyCallback) -> None: ...
     async def stop_notify(self) -> None: ...
@@ -49,6 +64,8 @@ class BleakBackend:
         self._connected: DeviceInfo | None = None
         self._scan_proc = None
         self.last_scan_note = None
+        self._unexpected_disconnect = False
+        self.on_disconnected: Callable[[], None] | None = None
 
     def cancel_scan(self) -> None:
         proc = self._scan_proc
@@ -123,17 +140,79 @@ class BleakBackend:
 
         return sorted(found.values(), key=_sort_key)
 
-    async def connect(self, address: str) -> DeviceInfo:
-        from bleak import BleakClient
+    async def _wait_until_advertising(
+        self, address: str, name: str | None, timeout_s: float
+    ) -> DeviceInfo | None:
+        devices = await self.scan(timeout_s)
+        wanted = _normalize_ble_address(address)
+        name_l = (name or "").lower()
+        by_name: DeviceInfo | None = None
+        for device in devices:
+            if _normalize_ble_address(device.address) == wanted:
+                return device
+            if name_l and device.name and device.name.lower() == name_l:
+                by_name = device
+        return by_name
 
-        client = BleakClient(address, timeout=20.0)
-        await client.connect()
-        if not client.is_connected:
-            raise ConnectionError(f"Failed to connect to {address}")
-        self._client = client
-        name = getattr(client, "name", None) or DEVICE_NAME_PREFIX + "unknown"
-        self._connected = DeviceInfo(name=name, address=address)
-        return self._connected
+    async def connect(
+        self,
+        address: str,
+        name: str | None = None,
+        wait_for_advertisement: bool = True,
+    ) -> DeviceInfo:
+        from bleak import BleakClient
+        from bleak.backends.device import BLEDevice
+        from bleak.exc import BleakError
+
+        from orbio.win_ble import prepare_windows_ble
+
+        prepare_windows_ble(uninitialize_sta=False)
+        self._unexpected_disconnect = False
+        client = None
+        try:
+            if wait_for_advertisement:
+                seen = await self._wait_until_advertising(address, name, FIND_TIMEOUT_S)
+                if seen is None:
+                    raise ConnectionError(
+                        f"No live advertisement for {name or address} in {FIND_TIMEOUT_S:.0f}s"
+                    )
+            else:
+                seen = DeviceInfo(name=name, address=address, likely_orbio=True)
+            ble_device = BLEDevice(seen.address, seen.name, None)
+            client = BleakClient(
+                ble_device,
+                timeout=CONNECT_TIMEOUT_S,
+                services=list(ORBIO_GATT_SERVICES),
+                pair=False,
+                disconnected_callback=self._on_ble_disconnected,
+            )
+            await client.connect()
+            if not client.is_connected:
+                raise ConnectionError(f"Failed to connect to {seen.address}")
+            self._client = client
+            connected_name = seen.name or getattr(client, "name", None) or DEVICE_NAME_PREFIX + "unknown"
+            self._connected = DeviceInfo(
+                name=connected_name,
+                address=client.address,
+                rssi=seen.rssi,
+                likely_orbio=True,
+            )
+            return self._connected
+        except (BleakError, asyncio.TimeoutError, OSError, ConnectionError):
+            if client is not None:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+                self._client = None
+                self._connected = None
+            raise
+
+    def _on_ble_disconnected(self, _client) -> None:
+        self._unexpected_disconnect = True
+        callback = self.on_disconnected
+        if callback is not None:
+            callback()
 
     async def disconnect(self) -> None:
         client = self._client
@@ -193,8 +272,19 @@ class SimulatorBackend:
             )
         ]
 
-    async def connect(self, address: str) -> DeviceInfo:
-        self._connected = DeviceInfo(name="Orbio-sim001", address=address, rssi=-47, simulated=True)
+    async def connect(
+        self,
+        address: str,
+        name: str | None = None,
+        wait_for_advertisement: bool = True,
+    ) -> DeviceInfo:
+        self._connected = DeviceInfo(
+            name=name or "Orbio-sim001",
+            address=address,
+            rssi=-47,
+            simulated=True,
+            likely_orbio=True,
+        )
         return self._connected
 
     async def disconnect(self) -> None:

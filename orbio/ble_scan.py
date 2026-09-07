@@ -16,6 +16,7 @@ from orbio.protocol import (
     DEVICE_NAME_PREFIX,
     is_orbio_advertised_name,
 )
+from orbio.win_ble import prepare_windows_ble
 
 ORBIO_SERVICE_UUIDS = {
     DATA_SERVICE_UUID.lower(),
@@ -104,6 +105,7 @@ async def scan_once(timeout_s: float) -> dict:
 
 
 def main() -> None:
+    prepare_windows_ble(uninitialize_sta=True)
     timeout_s = float(sys.argv[1]) if len(sys.argv) > 1 else 8.0
     payload = asyncio.run(scan_once(timeout_s))
     sys.stdout.write(json.dumps(payload))

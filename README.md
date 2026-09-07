@@ -16,7 +16,9 @@ pip install -r requirements.txt
 python -m orbio.app
 ```
 
-That opens `http://127.0.0.1:8765/`.
+That starts a standalone desktop window. A Desktop shortcut named **Orbio BioSensor BLE** launches the same thing.
+
+`--browser` opens the old tab at `http://127.0.0.1:8765/` instead. `--simulate` uses a fake device.
 
 Without hardware, add `--simulate`. The fake `Orbio-sim001` device appears automatically; Connect, then **Start sweep**. Fake 4992-byte frames are written under `data\`.
 

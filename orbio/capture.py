@@ -12,6 +12,94 @@ from orbio.protocol import IqSample, parse_sweep
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
+MEMORY_DIR = DATA_DIR / "memories"
+MEMORY_SLOTS = 5
+
+
+def ensure_data_dir() -> Path:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    return DATA_DIR
+
+
+def ensure_memory_dir() -> Path:
+    MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+    return MEMORY_DIR
+
+
+def _memory_path(slot: int) -> Path:
+    if slot < 1 or slot > MEMORY_SLOTS:
+        raise ValueError(f"Memory slot must be 1..{MEMORY_SLOTS}")
+    return MEMORY_DIR / f"mem{slot}.json"
+
+
+def list_memories() -> list[dict]:
+    ensure_memory_dir()
+    slots: list[dict] = []
+    for slot in range(1, MEMORY_SLOTS + 1):
+        path = _memory_path(slot)
+        if not path.is_file():
+            slots.append({"slot": slot, "empty": True, "label": f"Mem {slot} (empty)"})
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            slots.append({"slot": slot, "empty": True, "label": f"Mem {slot} (empty)"})
+            continue
+        n_samples = payload.get("n_samples") or len(payload.get("points") or [])
+        saved_at = str(payload.get("saved_at") or "")[:19].replace("T", " ")
+        device = payload.get("device_name") or ""
+        extra = " · ".join(part for part in (device, f"{n_samples} pts", saved_at) if part)
+        slots.append(
+            {
+                "slot": slot,
+                "empty": False,
+                "n_samples": n_samples,
+                "saved_at": payload.get("saved_at"),
+                "device_name": payload.get("device_name"),
+                "label": f"Mem {slot} · {extra}" if extra else f"Mem {slot}",
+            }
+        )
+    return slots
+
+
+def save_memory(slot: int, points: list[dict], meta: dict | None = None) -> dict:
+    if not points:
+        raise ValueError("Nothing to save into memory")
+    ensure_memory_dir()
+    payload = {
+        "slot": slot,
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "n_samples": len(points),
+        "points": points,
+    }
+    if meta:
+        payload.update({key: value for key, value in meta.items() if value not in (None, "")})
+    path = _memory_path(slot)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return {"ok": True, "slot": slot, "n_samples": len(points), "memories": list_memories()}
+
+
+def load_memory(slot: int) -> dict:
+    path = _memory_path(slot)
+    if not path.is_file():
+        raise FileNotFoundError(f"Memory {slot} is empty")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    points = payload.get("points") or []
+    if not points:
+        raise FileNotFoundError(f"Memory {slot} is empty")
+    return payload
+
+
+def clear_capture_files() -> dict:
+    """Delete bulk sweep captures. Five memory slots are left alone."""
+    deleted = 0
+    if DATA_DIR.is_dir():
+        for path in DATA_DIR.iterdir():
+            if path.is_file() and path.suffix.lower() in {".bin", ".csv", ".json"}:
+                if path.name.startswith("sweep_"):
+                    path.unlink()
+                    deleted += 1
+    return {"ok": True, "deleted": deleted, "memories": list_memories()}
 
 
 @dataclass
@@ -28,11 +116,6 @@ class SweepRecord:
     i_max: int
     q_min: int
     q_max: int
-
-
-def ensure_data_dir() -> Path:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    return DATA_DIR
 
 
 def save_sweep(
@@ -75,6 +158,34 @@ def save_sweep(
         meta["extra"] = extra
     json_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return record
+
+
+def load_latest_sweep() -> dict | None:
+    """Return points from the newest captured CSV, for dashboard plot preview."""
+    if not DATA_DIR.is_dir():
+        return None
+    csv_files = list(DATA_DIR.glob("sweep_*.csv"))
+    if not csv_files:
+        return None
+    latest = max(csv_files, key=lambda path: path.stat().st_mtime)
+    points: list[dict[str, int]] = []
+    with latest.open(newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            points.append(
+                {
+                    "i": int(row["i"]),
+                    "q": int(row["q"]),
+                    "f": int(row["frequency_mhz"]),
+                }
+            )
+    if not points:
+        return None
+    return {
+        "csv_path": str(latest),
+        "name": latest.name,
+        "n_samples": len(points),
+        "points": points,
+    }
 
 
 def _write_csv(path: Path, samples: list[IqSample]) -> None:

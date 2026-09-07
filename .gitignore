@@ -15,6 +15,7 @@ venv/
 data/*.bin
 data/*.csv
 data/*.json
+data/memories/
 !data/.gitkeep
 
 # OS / editor

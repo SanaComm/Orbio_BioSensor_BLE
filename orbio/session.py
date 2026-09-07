@@ -9,7 +9,7 @@ from typing import Any, Awaitable, Callable
 
 from orbio.assembler import SweepAssembler
 from orbio.capture import SweepRecord, save_sweep
-from orbio.protocol import is_orbio_advertised_name, parse_fw_id, parse_report_parameters
+from orbio.protocol import is_orbio_advertised_name, parse_fw_id, parse_report_parameters, parse_sweep
 from orbio.radio import BleakBackend, DeviceInfo, RadioBackend, SimulatorBackend
 
 EventHandler = Callable[[str, dict[str, Any]], Awaitable[None] | None]
@@ -30,6 +30,7 @@ class SessionStatus:
     last_sweep: SweepRecord | None = None
     devices: list[DeviceInfo] = field(default_factory=list)
     watching: bool = False
+    last_iq_points: list[dict[str, int]] = field(default_factory=list)
 
 
 class CaptureSession:
@@ -44,6 +45,11 @@ class CaptureSession:
         self._watch_pass_s = 20.0
         self._watch_name = "Orbio"
         self._sweep_index = 0
+        self._connecting = False
+        self._expect_disconnect = False
+        self._handling_remote_drop = False
+        if hasattr(self.backend, "on_disconnected"):
+            self.backend.on_disconnected = self._on_remote_disconnected
         try:
             self._loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -86,7 +92,21 @@ class CaptureSession:
         self._watch_name = needle
         self._watch_pass_s = pass_s
         self._watch_stop = asyncio.Event()
-        self._watch_task = asyncio.create_task(self._watch_loop(needle, pass_s))
+        self._watch_task = asyncio.create_task(self._watch_then_connect(needle, pass_s))
+
+    async def _watch_then_connect(self, name_contains: str, pass_s: float) -> None:
+        found: DeviceInfo | None = None
+        try:
+            found = await self._watch_loop(name_contains, pass_s)
+        finally:
+            if self._watch_task is asyncio.current_task():
+                self._watch_task = None
+        if found is not None and not self.status.connected and not self._connecting:
+            try:
+                await self._do_connect(found.address)
+            except Exception as exc:
+                detail = str(exc).strip() or repr(exc)
+                await self._emit("log", {"message": f"Auto-connect failed: {detail}"})
 
     async def stop_watch(self) -> None:
         self._watch_stop.set()
@@ -99,7 +119,7 @@ class CaptureSession:
             except asyncio.CancelledError:
                 pass
 
-    async def _watch_loop(self, name_contains: str, pass_s: float) -> None:
+    async def _watch_loop(self, name_contains: str, pass_s: float) -> DeviceInfo | None:
         needle = name_contains.lower()
         self.status.scanning = True
         self.status.watching = True
@@ -114,7 +134,6 @@ class CaptureSession:
                 )
             },
         )
-        announced: set[str] = set()
         adapter_logged = False
         pass_no = 0
         try:
@@ -155,20 +174,18 @@ class CaptureSession:
                 if hits:
                     self.status.devices = hits
                     await self._emit("devices", {"devices": [asdict(device) for device in hits]})
-                    for device in hits:
-                        if device.address in announced:
-                            continue
-                        announced.add(device.address)
-                        rssi = f"{device.rssi} dBm" if device.rssi is not None else "RSSI unknown"
-                        await self._emit(
-                            "log",
-                            {
-                                "message": (
-                                    f"Found {device.name}  {device.address}  {rssi}. "
-                                    "Click Connect on that row."
-                                )
-                            },
-                        )
+                    device = hits[0]
+                    rssi = f"{device.rssi} dBm" if device.rssi is not None else "RSSI unknown"
+                    await self._emit(
+                        "log",
+                        {
+                            "message": (
+                                f"Found {device.name}  {device.address}  {rssi}. "
+                                "Connecting automatically…"
+                            )
+                        },
+                    )
+                    return device
                 elif not self.status.devices:
                     await self._emit(
                         "log",
@@ -186,6 +203,7 @@ class CaptureSession:
                         await asyncio.wait_for(self._watch_stop.wait(), timeout=remaining)
                     except asyncio.TimeoutError:
                         pass
+            return None
         finally:
             self.status.scanning = False
             self.status.watching = False
@@ -193,13 +211,60 @@ class CaptureSession:
 
     async def connect(self, address: str) -> None:
         await self.stop_watch()
-        await self._emit("log", {"message": f"Connecting to {address}..."})
+        await self._do_connect(address)
+
+    async def _do_connect(self, address: str) -> None:
+        if self.status.connected or self._connecting:
+            return
+        self._connecting = True
         try:
-            device = await self.backend.connect(address)
-        except Exception:
-            await self.start_watch(self._watch_name, self._watch_pass_s)
-            raise
+            await self._connect_body(address)
+        finally:
+            self._connecting = False
+
+    async def _connect_body(self, address: str) -> None:
         known = next((item for item in self.status.devices if item.address == address), None)
+        label = (known.name if known else None) or address
+        last_error: Exception | None = None
+        device: DeviceInfo | None = None
+        for attempt in range(1, 5):
+            wait = attempt > 1 or known is None
+            await self._emit(
+                "log",
+                {
+                    "message": (
+                        f"Connect attempt {attempt}/4 to {label}: "
+                        + (
+                            "waiting for a live advertisement, then connecting…"
+                            if wait
+                            else "connecting immediately (already seen)…"
+                        )
+                    )
+                },
+            )
+            try:
+                device = await self.backend.connect(
+                    address,
+                    name=known.name if known else None,
+                    wait_for_advertisement=wait,
+                )
+                last_error = None
+                break
+            except Exception as exc:
+                last_error = exc
+                detail = str(exc).strip() or repr(exc)
+                await self._emit("log", {"message": f"Attempt {attempt} failed: {detail}"})
+                try:
+                    await self.backend.disconnect()
+                except Exception:
+                    pass
+                if attempt < 4:
+                    delay = min(2**attempt, 15)
+                    await self._emit("log", {"message": f"Retrying in {delay}s…"})
+                    await asyncio.sleep(delay)
+        if device is None:
+            await self.start_watch(self._watch_name, self._watch_pass_s)
+            raise last_error if last_error else ConnectionError("Connect failed")
         if known is not None:
             device = DeviceInfo(
                 name=known.name or device.name,
@@ -240,20 +305,60 @@ class CaptureSession:
         )
         await self._emit("status", self.public_status())
 
+    def _on_remote_disconnected(self) -> None:
+        if self._expect_disconnect or self._handling_remote_drop or not self.status.connected:
+            return
+        self._handling_remote_drop = True
+        loop = self._loop
+        if loop is None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self._handling_remote_drop = False
+                return
+            self._loop = loop
+        asyncio.run_coroutine_threadsafe(self._handle_remote_disconnect(), loop)
+
+    async def _handle_remote_disconnect(self) -> None:
+        try:
+            if self._expect_disconnect or not self.status.connected:
+                return
+            await self._emit(
+                "log",
+                {"message": "Remote closed the BLE connection. Returning to scan."},
+            )
+            try:
+                await self.disconnect(resume_watch=True)
+            except Exception as exc:
+                detail = str(exc).strip() or repr(exc)
+                await self._emit("log", {"message": f"Cleanup after remote disconnect failed: {detail}"})
+                self.status.connected = False
+                self.status.notifications = False
+                self.status.device = None
+                await self.start_watch(self._watch_name, self._watch_pass_s)
+        finally:
+            self._handling_remote_drop = False
+
     async def disconnect(self, resume_watch: bool = True) -> None:
+        self._expect_disconnect = True
         try:
             if self.status.notifications:
                 await self.backend.stop_notify()
         finally:
-            await self.backend.disconnect()
-            self.status.connected = False
-            self.status.notifications = False
-            self.status.device = None
-            self.assembler.reset()
-            await self._emit("log", {"message": "Disconnected"})
-            await self._emit("status", self.public_status())
-            if resume_watch:
-                await self.start_watch(self._watch_name, self._watch_pass_s)
+            try:
+                await self.backend.disconnect()
+            finally:
+                was_connected = self.status.connected
+                self.status.connected = False
+                self.status.notifications = False
+                self.status.device = None
+                self.assembler.reset()
+                if was_connected:
+                    await self._emit("log", {"message": "Disconnected"})
+                await self._emit("status", self.public_status())
+                self._expect_disconnect = False
+                if resume_watch:
+                    await self.start_watch(self._watch_name, self._watch_pass_s)
 
     async def send_command(self, command: str) -> None:
         if not self.status.connected:
@@ -278,6 +383,7 @@ class CaptureSession:
             "last_sweep": last,
             "devices": [asdict(item) for item in self.status.devices],
             "watching": self.status.watching,
+            "iq_points": self.status.last_iq_points,
         }
 
     def _on_notify(self, _handle: int | bytearray, data: bytearray | None = None) -> None:
@@ -326,7 +432,10 @@ class CaptureSession:
         self.status.sweep_count = self._sweep_index
         self.status.last_sweep = record
         self.status.buffered_bytes = self.assembler.buffered_bytes
-        await self._emit("sweep", asdict(record))
+        samples = parse_sweep(payload)
+        points = [{"i": row.i, "q": row.q, "f": row.frequency_mhz} for row in samples]
+        self.status.last_iq_points = points
+        await self._emit("sweep", {**asdict(record), "points": points})
         await self._emit(
             "log",
             {"message": f"Sweep {record.index} saved ({record.n_samples} I/Q samples) -> {record.csv_path}"},
