@@ -1,3 +1,4 @@
 @echo off
-cd /d C:\Users\Les\Orbio_BioSensor_BLE
-python -m orbio.app
+cd /d "%~dp0"
+".venv\Scripts\python.exe" -m orbio.app
+if errorlevel 1 pause

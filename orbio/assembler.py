@@ -30,6 +30,7 @@ class SweepAssembler:
         self._buffer = bytearray()
         self._last_chunk_at: float | None = None
         self.dropped_partials = 0
+        self.began_new_sweep = False
 
     @property
     def buffered_bytes(self) -> int:
@@ -38,19 +39,23 @@ class SweepAssembler:
     def reset(self) -> None:
         self._buffer.clear()
         self._last_chunk_at = None
+        self.began_new_sweep = False
 
     def push(self, chunk: bytes, now: float) -> list[bytes]:
         if not chunk:
+            self.began_new_sweep = False
             return []
 
-        if (
-            self._buffer
+        stale = (
+            bool(self._buffer)
             and self._last_chunk_at is not None
             and (now - self._last_chunk_at) > self.timeout_s
-        ):
+        )
+        if stale:
             self.dropped_partials += 1
             self._buffer.clear()
 
+        self.began_new_sweep = stale or not self._buffer
         self._last_chunk_at = now
         self._buffer.extend(chunk)
 

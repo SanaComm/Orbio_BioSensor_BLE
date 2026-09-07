@@ -32,9 +32,24 @@ def test_assembler_joins_240_byte_chunks() -> None:
     now = 0.0
     for start in range(0, SWEEP_BYTES, 240):
         complete.extend(assembler.push(payload[start : start + 240], now))
+        if start == 0:
+            assert assembler.began_new_sweep
+        else:
+            assert not assembler.began_new_sweep
         now += 0.01
     assert complete == [payload]
     assert assembler.buffered_bytes == 0
+
+
+def test_assembler_marks_new_sweep_after_stale_partial() -> None:
+    assembler = SweepAssembler(timeout_s=1)
+    assembler.push(b"\x00" * 100, 0.0)
+    assert assembler.began_new_sweep
+    assembler.push(b"\x01" * 50, 0.2)
+    assert not assembler.began_new_sweep
+    assembler.push(b"\x02" * 40, 5.0)
+    assert assembler.began_new_sweep
+    assert assembler.dropped_partials == 1
 
 
 def test_assembler_drops_stale_partial() -> None:

@@ -128,9 +128,6 @@ function renderStatus(status) {
 
   if (status.connected) deviceList.innerHTML = "";
   else if (status.devices) renderDevices(status.devices, status.connected, watching);
-  if (iqHistory.length === 0 && status.iq_points && status.iq_points.length) {
-    setIqPoints(status.iq_points);
-  }
 }
 
 function freqColor(mhz) {
@@ -352,6 +349,9 @@ socket.addEventListener("message", (event) => {
     const expected = message.payload.expected_bytes || 4992;
     meterFill.style.width = `${Math.min(100, (buffered / expected) * 100)}%`;
     meterLabel.textContent = `${buffered} / ${expected} bytes (last chunk ${message.payload.bytes})`;
+  }
+  if (message.event === "plot_reset") {
+    clearIqPlot();
   }
   if (message.event === "sweep") {
     setSweepMeta(message.payload);

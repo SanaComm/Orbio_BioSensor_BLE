@@ -365,6 +365,9 @@ class CaptureSession:
             raise RuntimeError("Not connected")
         await self.backend.write_parameters(command)
         await self._emit("log", {"message": f"Sent command: {command}"})
+        code = command.strip().split(",", 1)[0]
+        if code == "1":
+            await self._reset_iq_plot("Plot cleared for a new sweep set.")
 
     def public_status(self) -> dict[str, Any]:
         device = asdict(self.status.device) if self.status.device else None
@@ -397,6 +400,8 @@ class CaptureSession:
             try:
                 complete = self.assembler.push(payload, time.monotonic())
                 self.status.buffered_bytes = self.assembler.buffered_bytes
+                if self.assembler.began_new_sweep:
+                    await self._reset_iq_plot()
                 await self._emit(
                     "packet",
                     {
@@ -441,6 +446,12 @@ class CaptureSession:
             {"message": f"Sweep {record.index} saved ({record.n_samples} I/Q samples) -> {record.csv_path}"},
         )
         await self._emit("status", self.public_status())
+
+    async def _reset_iq_plot(self, message: str | None = None) -> None:
+        self.status.last_iq_points = []
+        await self._emit("plot_reset", {})
+        if message:
+            await self._emit("log", {"message": message})
 
     async def _emit(self, event: str, payload: dict[str, Any]) -> None:
         for handler in list(self._handlers):
