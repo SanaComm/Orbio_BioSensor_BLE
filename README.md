@@ -42,6 +42,20 @@ Each completed sweep writes three files in `data\`:
 
 The CSV layout assumed for Phase 1 (the PDF figure was not machine-readable) is: for each frequency, 32 little-endian signed int16 I/Q pairs.
 
+## How the I/Q plot works
+
+The desktop window plots **one completed 4992-byte sweep at a time**. That frame is 39 frequencies × 32 samples = 1248 I/Q points. Start sweep (`1`) can produce many of those frames in a row (default 30 s on, then sleep). The plot does **not** overlay frames.
+
+- **I** is the horizontal axis, **Q** is the vertical axis. Color runs from 700 MHz (blue) to 1080 MHz (yellow).
+- Axes autoscale to the largest |I| or |Q| in the frame currently on screen (plus a small margin).
+- **Start sweep (`1`)** wipes the canvas immediately.
+- The **first BLE packet of the next 4992-byte frame** also wipes it, so you may briefly see “Waiting for a sweep…”.
+- When that frame is complete, those 1248 points **replace** everything. The previous frame is gone.
+
+A cluster that stays in the same quadrant is in almost every frame. Points that appear and then vanish were in one frame and not in the next. That is replacement, not leftover ink.
+
+**Clear Plot** empties the on-screen drawing only. **Clear Data** deletes captured `data/sweep_*` files and leaves the five memory slots. **Save** / **Recall** store a copy of whatever is on the plot in a slot; that is the only intentional persistence.
+
 ## Controls
 
 Set Parameters is a comma-separated ASCII write. The UI can send:
@@ -55,5 +69,3 @@ Set Parameters is a comma-separated ASCII write. The UI can send:
 | LNA, VGA | `6,1,7` |
 | Sweep s, interval s | `7,30,600` |
 | PLL gain (dB) | `9,10` |
-
-Phase 2 can decide how to plot or analyze the captured I/Q.
