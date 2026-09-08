@@ -169,6 +169,17 @@ h2 {
   font-size: 12px;
 }
 
+.packet-loss {
+  margin: 6px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.packet-loss.alert {
+  color: var(--danger);
+}
+
 code {
   font-family: Consolas, "Courier New", monospace;
   color: #d4ecff;
@@ -361,6 +372,7 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: center;
+  position: relative;
 }
 
 #iq-plot {

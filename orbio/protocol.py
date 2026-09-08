@@ -25,11 +25,20 @@ BYTES_PER_IQ = 4  # int16 I + int16 Q
 SWEEP_BYTES = N_SAMPLES * BYTES_PER_IQ * N_FREQUENCIES  # 4992
 FREQ_MHZ = tuple(range(700, 1081, 10))  # 700..1080 step 10 MHz
 
+# Start-of-sweep header (spec figure). Appears once at the beginning of a
+# sweep, not on later BLE notify packets of the same sweep.
+#   3 magic + 1 type + 4 timestamp + 2 packet length  = 10 bytes
+PACKET_MAGIC = bytes((0xAA, 0xBB, 0xCC))
+PACKET_TYPE_SWEEP = 1
+PACKET_TYPE_PPG = 2
+PACKET_TYPE_ACCEL = 3
+FRAME_HEADER_BYTES = 10
+
 assert len(FREQ_MHZ) == N_FREQUENCIES
 assert SWEEP_BYTES == 4992
+assert FRAME_HEADER_BYTES == 10
 
-# Spec layout is not pictured in the extracted PDF. Phase 1 assumes:
-# for each of 39 frequencies, 32 samples of little-endian signed int16 I then Q.
+# Phase 1: 39 frequencies, 32 samples of little-endian signed int16 I then Q.
 IQ_BYTEORDER = "little"
 IQ_SIGNED = True
 
@@ -65,6 +74,67 @@ def encode_parameter_write(command: str) -> bytes:
     if not payload:
         raise ValueError("Control command is empty")
     return payload.encode("ascii")
+
+
+@dataclass(frozen=True)
+class FrameHeader:
+    packet_type: int
+    timestamp: int
+    length: int
+    payload_bytes: int
+
+
+def encode_sweep_header(*, timestamp: int = 0, payload_bytes: int = SWEEP_BYTES) -> bytes:
+    """Build the 10-byte start-of-sweep header. Length is little-endian I/Q size."""
+    if not 0 <= timestamp <= 0xFFFFFFFF:
+        raise ValueError("timestamp must fit in 4 bytes")
+    if not 0 <= payload_bytes <= 0xFFFF:
+        raise ValueError("payload length must fit in 2 bytes")
+    return (
+        PACKET_MAGIC
+        + bytes((PACKET_TYPE_SWEEP,))
+        + timestamp.to_bytes(4, "little")
+        + payload_bytes.to_bytes(2, "little")
+    )
+
+
+def _choose_length_field(le: int, be: int) -> int:
+    plausible = {SWEEP_BYTES, SWEEP_BYTES + FRAME_HEADER_BYTES}
+    if le in plausible:
+        return le
+    if be in plausible:
+        return be
+    return le
+
+
+def iq_payload_bytes(length_field: int) -> int:
+    """Map the header length field to I/Q bytes after the header."""
+    if length_field == SWEEP_BYTES + FRAME_HEADER_BYTES:
+        return SWEEP_BYTES
+    if length_field > 0:
+        return length_field
+    return SWEEP_BYTES
+
+
+def parse_frame_header(data: bytes) -> FrameHeader | None:
+    if len(data) < FRAME_HEADER_BYTES or not data.startswith(PACKET_MAGIC):
+        return None
+    packet_type = data[3]
+    timestamp = int.from_bytes(data[4:8], "little", signed=False)
+    length = _choose_length_field(
+        int.from_bytes(data[8:10], "little", signed=False),
+        int.from_bytes(data[8:10], "big", signed=False),
+    )
+    return FrameHeader(packet_type, timestamp, length, iq_payload_bytes(length))
+
+
+def trailing_magic_prefix_len(data: bytes) -> int:
+    """Bytes at the end of ``data`` that could be the start of PACKET_MAGIC."""
+    max_n = min(len(PACKET_MAGIC) - 1, len(data))
+    for n in range(max_n, 0, -1):
+        if PACKET_MAGIC.startswith(data[-n:]):
+            return n
+    return 0
 
 
 @dataclass(frozen=True)

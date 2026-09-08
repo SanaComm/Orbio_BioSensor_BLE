@@ -17,6 +17,7 @@ const memorySlot = document.getElementById("memory-slot");
 const clearDataBtn = document.getElementById("clear-data-btn");
 const saveMemBtn = document.getElementById("save-mem-btn");
 const recallMemBtn = document.getElementById("recall-mem-btn");
+const packetLossEl = document.getElementById("packet-loss");
 
 let lastDevice = {};
 
@@ -49,8 +50,12 @@ function fileName(path) {
 }
 
 function setSweepMeta(sweep) {
+  const got = sweep.n_bytes != null ? sweep.n_bytes : 4992;
+  const expected = sweep.expected_bytes || 4992;
+  const ok = sweep.byte_count_ok !== false && got === expected;
   setMeta(sweepMeta, [
     ["Last sweep", `#${sweep.index}`],
+    ["Bytes", `${got} / ${expected}${ok ? "" : " MISMATCH"}`],
     ["I range", `${sweep.i_min} .. ${sweep.i_max}`],
     ["Q range", `${sweep.q_min} .. ${sweep.q_max}`],
     ["CSV", fileName(sweep.csv_path)],
@@ -111,6 +116,7 @@ function renderStatus(status) {
   const expected = status.expected_bytes || 4992;
   meterFill.style.width = `${Math.min(100, (buffered / expected) * 100)}%`;
   meterLabel.textContent = `${buffered} / ${expected} bytes`;
+  setPacketLoss(status.packet_loss || 0);
 
   const device = status.device || {};
   lastDevice = device;
@@ -118,6 +124,8 @@ function renderStatus(status) {
     ["Name", device.name],
     ["Address", device.address],
     ["RSSI", device.rssi != null ? `${device.rssi} dBm` : null],
+    ["MTU", status.mtu != null ? `${status.mtu} bytes` : null],
+    ["Conn interval", status.connection_interval_ms != null ? `${status.connection_interval_ms} ms` : null],
     ["Firmware", status.fw_id],
     ["Parameters", status.parameters ? status.parameters.raw : null],
     ["Sweeps saved", status.sweep_count],
@@ -128,6 +136,12 @@ function renderStatus(status) {
 
   if (status.connected) deviceList.innerHTML = "";
   else if (status.devices) renderDevices(status.devices, status.connected, watching);
+}
+
+function setPacketLoss(count) {
+  const n = Number(count) || 0;
+  packetLossEl.textContent = `Packet Loss # = ${n}`;
+  packetLossEl.classList.toggle("alert", n > 0);
 }
 
 function freqColor(mhz) {
@@ -248,41 +262,49 @@ function drawIqPlot(points) {
     return;
   }
 
-  let maxAbs = 1;
-  for (const p of points) {
-    maxAbs = Math.max(maxAbs, Math.abs(p.i), Math.abs(p.q));
+  const visible = points.filter((p) => p.i >= 0 && p.q >= 0);
+  if (!visible.length) {
+    ctx.fillStyle = "#93a4b8";
+    ctx.textAlign = "center";
+    ctx.fillText("No positive I/Q samples in this sweep…", size / 2, size / 2);
+    return;
   }
-  maxAbs *= 1.08;
 
-  const toX = (i) => pad + ((i + maxAbs) / (2 * maxAbs)) * plot;
-  const toY = (q) => pad + ((maxAbs - q) / (2 * maxAbs)) * plot;
-  const originX = toX(0);
-  const originY = toY(0);
+  let maxVal = 1;
+  for (const p of visible) {
+    maxVal = Math.max(maxVal, p.i, p.q);
+  }
+  maxVal *= 1.08;
+
+  const originX = pad;
+  const originY = pad + plot;
+  const toX = (i) => originX + (i / maxVal) * plot;
+  const toY = (q) => originY - (q / maxVal) * plot;
 
   ctx.strokeStyle = "#2a3b4d";
   ctx.beginPath();
-  ctx.moveTo(pad, originY);
-  ctx.lineTo(pad + plot, originY);
-  ctx.moveTo(originX, pad);
-  ctx.lineTo(originX, pad + plot);
+  ctx.moveTo(originX, originY);
+  ctx.lineTo(originX + plot, originY);
+  ctx.moveTo(originX, originY);
+  ctx.lineTo(originX, originY - plot);
   ctx.stroke();
 
   ctx.fillStyle = "#93a4b8";
   ctx.textAlign = "center";
-  ctx.fillText("I", pad + plot - 8 * dpr, originY - 8 * dpr);
+  ctx.fillText("I", originX + plot - 8 * dpr, originY - 8 * dpr);
   ctx.textAlign = "left";
-  ctx.fillText("Q", originX + 8 * dpr, pad + 12 * dpr);
+  ctx.fillText("Q", originX + 8 * dpr, originY - plot + 12 * dpr);
   ctx.textAlign = "center";
-  ctx.fillText(String(-Math.round(maxAbs)), pad, originY + 14 * dpr);
-  ctx.fillText(String(Math.round(maxAbs)), pad + plot, originY + 14 * dpr);
+  ctx.fillText("0", originX, originY + 14 * dpr);
+  ctx.fillText(String(Math.round(maxVal)), originX + plot, originY + 14 * dpr);
   ctx.textAlign = "right";
-  ctx.fillText(String(Math.round(maxAbs)), originX - 6 * dpr, pad + 10 * dpr);
-  ctx.fillText(String(-Math.round(maxAbs)), originX - 6 * dpr, pad + plot);
+  ctx.fillText(String(Math.round(maxVal)), originX - 6 * dpr, originY - plot + 10 * dpr);
+  ctx.fillText("0", originX - 6 * dpr, originY);
 
   const r = Math.max(1.1 * dpr, 1.6);
-  const stride = points.length > 40000 ? Math.ceil(points.length / 40000) : 1;
-  for (let i = 0; i < points.length; i += stride) {
-    const p = points[i];
+  const stride = visible.length > 40000 ? Math.ceil(visible.length / 40000) : 1;
+  for (let i = 0; i < visible.length; i += stride) {
+    const p = visible[i];
     ctx.fillStyle = freqColor(p.f);
     ctx.beginPath();
     ctx.arc(toX(p.i), toY(p.q), r, 0, Math.PI * 2);
@@ -344,6 +366,9 @@ socket.addEventListener("message", (event) => {
   if (message.event === "log") log(message.payload.message);
   if (message.event === "status") renderStatus(message.payload);
   if (message.event === "devices") renderDevices(message.payload.devices || [], false, true);
+  if (message.event === "packet_loss") {
+    setPacketLoss(message.payload.count);
+  }
   if (message.event === "packet") {
     const buffered = message.payload.buffered_bytes || 0;
     const expected = message.payload.expected_bytes || 4992;

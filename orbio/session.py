@@ -9,7 +9,7 @@ from typing import Any, Awaitable, Callable
 
 from orbio.assembler import SweepAssembler
 from orbio.capture import SweepRecord, save_sweep
-from orbio.protocol import is_orbio_advertised_name, parse_fw_id, parse_report_parameters, parse_sweep
+from orbio.protocol import SWEEP_BYTES, is_orbio_advertised_name, parse_fw_id, parse_report_parameters, parse_sweep
 from orbio.radio import BleakBackend, DeviceInfo, RadioBackend, SimulatorBackend
 
 EventHandler = Callable[[str, dict[str, Any]], Awaitable[None] | None]
@@ -31,6 +31,9 @@ class SessionStatus:
     devices: list[DeviceInfo] = field(default_factory=list)
     watching: bool = False
     last_iq_points: list[dict[str, int]] = field(default_factory=list)
+    mtu: int | None = None
+    connection_interval_ms: float | None = None
+    connection_latency: int | None = None
 
 
 class CaptureSession:
@@ -50,6 +53,8 @@ class CaptureSession:
         self._handling_remote_drop = False
         if hasattr(self.backend, "on_disconnected"):
             self.backend.on_disconnected = self._on_remote_disconnected
+        if hasattr(self.backend, "on_connection_info"):
+            self.backend.on_connection_info = self._on_connection_info
         try:
             self._loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -293,6 +298,7 @@ class CaptureSession:
 
         await self.backend.start_notify(self._on_notify)
         self.status.notifications = True
+        await self._refresh_connection_info(delay_s=0.4)
         await self._emit(
             "log",
             {
@@ -335,6 +341,9 @@ class CaptureSession:
                 self.status.connected = False
                 self.status.notifications = False
                 self.status.device = None
+                self.status.mtu = None
+                self.status.connection_interval_ms = None
+                self.status.connection_latency = None
                 await self.start_watch(self._watch_name, self._watch_pass_s)
         finally:
             self._handling_remote_drop = False
@@ -352,6 +361,9 @@ class CaptureSession:
                 self.status.connected = False
                 self.status.notifications = False
                 self.status.device = None
+                self.status.mtu = None
+                self.status.connection_interval_ms = None
+                self.status.connection_latency = None
                 self.assembler.reset()
                 if was_connected:
                     await self._emit("log", {"message": "Disconnected"})
@@ -369,6 +381,63 @@ class CaptureSession:
         if code == "1":
             await self._reset_iq_plot("Plot cleared for a new sweep set.")
 
+    def _apply_connection_info(self, info: dict[str, Any]) -> bool:
+        changed = False
+        mtu = info.get("mtu")
+        interval_ms = info.get("connection_interval_ms")
+        latency = info.get("connection_latency")
+        if mtu != self.status.mtu:
+            self.status.mtu = mtu
+            changed = True
+        if interval_ms != self.status.connection_interval_ms:
+            self.status.connection_interval_ms = interval_ms
+            changed = True
+        if latency != self.status.connection_latency:
+            self.status.connection_latency = latency
+            changed = True
+        return changed
+
+    def _connection_info_log(self) -> str:
+        parts: list[str] = []
+        if self.status.mtu:
+            parts.append(f"MTU {self.status.mtu} bytes")
+        if self.status.connection_interval_ms:
+            parts.append(f"interval {self.status.connection_interval_ms:g} ms")
+        elif self.status.connected:
+            parts.append("interval not reported")
+        if self.status.connection_latency:
+            parts.append(f"latency {self.status.connection_latency} events")
+        return "BLE link: " + ", ".join(parts) if parts else "BLE link parameters not available"
+
+    async def _refresh_connection_info(self, delay_s: float = 0.0) -> None:
+        reader = getattr(self.backend, "read_connection_info", None)
+        if not callable(reader):
+            return
+        if delay_s:
+            await asyncio.sleep(delay_s)
+        try:
+            info = reader()
+        except Exception as exc:
+            await self._emit("log", {"message": f"Could not read BLE link parameters: {exc}"})
+            return
+        self._apply_connection_info(info)
+        await self._emit("log", {"message": self._connection_info_log()})
+
+    def _on_connection_info(self, info: dict[str, Any]) -> None:
+        loop = self._loop
+        if loop is None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return
+
+        async def _update() -> None:
+            if self._apply_connection_info(info):
+                await self._emit("log", {"message": self._connection_info_log()})
+                await self._emit("status", self.public_status())
+
+        asyncio.run_coroutine_threadsafe(_update(), loop)
+
     def public_status(self) -> dict[str, Any]:
         device = asdict(self.status.device) if self.status.device else None
         last = asdict(self.status.last_sweep) if self.status.last_sweep else None
@@ -381,12 +450,16 @@ class CaptureSession:
             "fw_id": self.status.fw_id,
             "parameters": self.status.parameters,
             "buffered_bytes": self.assembler.buffered_bytes,
-            "expected_bytes": self.status.expected_bytes,
+            "expected_bytes": self.assembler.expected_bytes,
             "sweep_count": self.status.sweep_count,
             "last_sweep": last,
             "devices": [asdict(item) for item in self.status.devices],
             "watching": self.status.watching,
-            "iq_points": self.status.last_iq_points,
+            "dropped_partials": self.assembler.dropped_partials,
+            "packet_loss": self.assembler.packet_loss,
+            "mtu": self.status.mtu,
+            "connection_interval_ms": self.status.connection_interval_ms,
+            "connection_latency": self.status.connection_latency,
         }
 
     def _on_notify(self, _handle: int | bytearray, data: bytearray | None = None) -> None:
@@ -400,8 +473,19 @@ class CaptureSession:
             try:
                 complete = self.assembler.push(payload, time.monotonic())
                 self.status.buffered_bytes = self.assembler.buffered_bytes
-                if self.assembler.began_new_sweep:
-                    await self._reset_iq_plot()
+                self.status.expected_bytes = self.assembler.expected_bytes
+                if self.assembler.packet_loss_this_push:
+                    count = self.assembler.packet_loss
+                    await self._emit(
+                        "log",
+                        {
+                            "message": (
+                                f"Packet Loss # = {count} "
+                                "(AA BB CC appeared mid-sweep; header is start-of-sweep only)"
+                            )
+                        },
+                    )
+                    await self._emit("packet_loss", {"count": count})
                 await self._emit(
                     "packet",
                     {
@@ -425,14 +509,38 @@ class CaptureSession:
         asyncio.run_coroutine_threadsafe(_handle_chunk(), loop)
 
     async def _complete_sweep(self, payload: bytes) -> None:
+        header = self.assembler.last_sweep_header
+        got = len(payload)
+        header_length = header.length if header is not None else None
+        byte_count_ok = got == SWEEP_BYTES and self.assembler.last_byte_count_ok
+        count_msg = f"Sweep byte count {got} {'matches' if byte_count_ok else 'DOES NOT MATCH'} expected {SWEEP_BYTES}"
+        if header_length is not None:
+            count_msg += f" (header length field {header_length})"
+        await self._emit("log", {"message": count_msg})
+        if not byte_count_ok:
+            await self._emit(
+                "log",
+                {"message": f"Discarding sweep: PC received {got} I/Q bytes, spec requires {SWEEP_BYTES}"},
+            )
+            await self._emit("status", self.public_status())
+            return
+
         self._sweep_index += 1
         device = self.status.device
+        extra: dict[str, Any] = {"fw_id": self.status.fw_id, "parameters": self.status.parameters}
+        extra["n_bytes"] = got
+        extra["expected_bytes"] = SWEEP_BYTES
+        extra["byte_count_ok"] = True
+        if header is not None:
+            extra["frame_type"] = header.packet_type
+            extra["frame_timestamp"] = header.timestamp
+            extra["frame_length"] = header.length
         record = save_sweep(
             payload,
             index=self._sweep_index,
             device_name=device.name if device else None,
             device_address=device.address if device else None,
-            extra={"fw_id": self.status.fw_id, "parameters": self.status.parameters},
+            extra=extra,
         )
         self.status.sweep_count = self._sweep_index
         self.status.last_sweep = record
@@ -440,7 +548,18 @@ class CaptureSession:
         samples = parse_sweep(payload)
         points = [{"i": row.i, "q": row.q, "f": row.frequency_mhz} for row in samples]
         self.status.last_iq_points = points
-        await self._emit("sweep", {**asdict(record), "points": points})
+        await self._emit(
+            "sweep",
+            {
+                **asdict(record),
+                "points": points,
+                "n_bytes": got,
+                "expected_bytes": SWEEP_BYTES,
+                "byte_count_ok": True,
+                "header_length": header_length,
+                "header_timestamp": header.timestamp if header is not None else None,
+            },
+        )
         await self._emit(
             "log",
             {"message": f"Sweep {record.index} saved ({record.n_samples} I/Q samples) -> {record.csv_path}"},

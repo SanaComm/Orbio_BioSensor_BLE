@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import struct
+import time
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
@@ -12,6 +13,7 @@ from orbio.protocol import (
     DEVICE_NAME_PREFIX,
     DATA_SERVICE_UUID,
     FREQ_MHZ,
+    MAX_NOTIFY_BYTES,
     N_SAMPLES,
     REPORT_FW_ID_UUID,
     REPORT_PARAMETERS_UUID,
@@ -19,6 +21,7 @@ from orbio.protocol import (
     SWEEP_BYTES,
     SWEEP_DATA_UUID,
     encode_parameter_write,
+    encode_sweep_header,
     is_orbio_advertised_name,
 )
 
@@ -66,6 +69,9 @@ class BleakBackend:
         self.last_scan_note = None
         self._unexpected_disconnect = False
         self.on_disconnected: Callable[[], None] | None = None
+        self.on_connection_info: Callable[[dict], None] | None = None
+        self._conn_param_token = None
+        self._conn_param_requester = None
 
     def cancel_scan(self) -> None:
         proc = self._scan_proc
@@ -197,6 +203,7 @@ class BleakBackend:
                 rssi=seen.rssi,
                 likely_orbio=True,
             )
+            self._attach_connection_param_listener()
             return self._connected
         except (BleakError, asyncio.TimeoutError, OSError, ConnectionError):
             if client is not None:
@@ -214,7 +221,76 @@ class BleakBackend:
         if callback is not None:
             callback()
 
+    def _detach_connection_param_listener(self) -> None:
+        requester = self._conn_param_requester
+        token = self._conn_param_token
+        self._conn_param_requester = None
+        self._conn_param_token = None
+        if requester is None or token is None:
+            return
+        try:
+            requester.remove_connection_parameters_changed(token)
+        except Exception:
+            pass
+
+    def _attach_connection_param_listener(self) -> None:
+        self._detach_connection_param_listener()
+        requester = self._winrt_device()
+        if requester is None:
+            return
+        try:
+            self._conn_param_token = requester.add_connection_parameters_changed(
+                self._on_connection_parameters_changed
+            )
+            self._conn_param_requester = requester
+        except Exception:
+            self._conn_param_token = None
+            self._conn_param_requester = None
+
+    def _on_connection_parameters_changed(self, _device, _args) -> None:
+        callback = self.on_connection_info
+        if callback is None:
+            return
+        try:
+            callback(self.read_connection_info())
+        except Exception:
+            pass
+
+    def _winrt_device(self):
+        client = self._client
+        if client is None:
+            return None
+        backend = getattr(client, "_backend", None)
+        return getattr(backend, "_requester", None)
+
+    def read_connection_info(self) -> dict:
+        info: dict = {}
+        client = self._client
+        if client is None:
+            return info
+        try:
+            info["mtu"] = int(client.mtu_size)
+        except Exception:
+            pass
+        requester = self._winrt_device()
+        if requester is None:
+            return info
+        try:
+            params = requester.get_connection_parameters()
+            units = int(params.connection_interval)
+            if units:
+                info["connection_interval"] = units
+                info["connection_interval_ms"] = round(units * 1.25, 2)
+            info["connection_latency"] = int(params.connection_latency)
+            timeout_units = int(params.link_timeout)
+            if timeout_units:
+                info["supervision_timeout_ms"] = timeout_units * 10
+        except Exception:
+            pass
+        return info
+
     async def disconnect(self) -> None:
+        self._detach_connection_param_listener()
         client = self._client
         self._client = None
         self._connected = None
@@ -287,6 +363,9 @@ class SimulatorBackend:
         )
         return self._connected
 
+    def read_connection_info(self) -> dict:
+        return {"mtu": 185, "connection_interval_ms": 30.0, "connection_latency": 0}
+
     async def disconnect(self) -> None:
         await self.stop_notify()
         self._connected = None
@@ -323,8 +402,10 @@ class SimulatorBackend:
                 await asyncio.sleep(1.5)
                 if self._streaming and self._callback:
                     payload = _fake_sweep()
-                    for start in range(0, SWEEP_BYTES, 240):
-                        chunk = payload[start : start + 240]
+                    header = encode_sweep_header(timestamp=int(time.time()) & 0xFFFFFFFF)
+                    frame = header + payload
+                    for start in range(0, len(frame), MAX_NOTIFY_BYTES):
+                        chunk = frame[start : start + MAX_NOTIFY_BYTES]
                         self._callback(0, bytearray(chunk))
                         await asyncio.sleep(0.01)
         except asyncio.CancelledError:
