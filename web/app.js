@@ -111,7 +111,7 @@ function renderStatus(status) {
   disconnectBtn.disabled = !status.connected;
   sendBtn.disabled = !status.connected;
   pauseBtn.disabled = Boolean(status.connected);
-  pauseBtn.textContent = watching ? "Pause looking" : "Resume looking";
+  pauseBtn.textContent = watching ? "Pause Scanning" : "Resume Scanning";
 
   const buffered = status.buffered_bytes || 0;
   const expected = status.expected_bytes || 4992;
