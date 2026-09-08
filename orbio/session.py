@@ -381,6 +381,14 @@ class CaptureSession:
         if code == "1":
             await self._reset_iq_plot("Plot cleared for a new sweep set.")
 
+    async def clear_stats(self) -> dict[str, Any]:
+        self.assembler.clear_stats()
+        status = self.public_status()
+        await self._emit("log", {"message": "Packet loss stats cleared"})
+        await self._emit("packet_loss", {"count": 0, "total": 0})
+        await self._emit("status", status)
+        return status
+
     def _apply_connection_info(self, info: dict[str, Any]) -> bool:
         changed = False
         mtu = info.get("mtu")
@@ -457,6 +465,7 @@ class CaptureSession:
             "watching": self.status.watching,
             "dropped_partials": self.assembler.dropped_partials,
             "packet_loss": self.assembler.packet_loss,
+            "packet_count": self.assembler.packet_count,
             "mtu": self.status.mtu,
             "connection_interval_ms": self.status.connection_interval_ms,
             "connection_latency": self.status.connection_latency,
@@ -476,16 +485,17 @@ class CaptureSession:
                 self.status.expected_bytes = self.assembler.expected_bytes
                 if self.assembler.packet_loss_this_push:
                     count = self.assembler.packet_loss
+                    total = self.assembler.packet_count
                     await self._emit(
                         "log",
                         {
                             "message": (
-                                f"Packet Loss # = {count} "
+                                f"Packet Loss # = {count} / {total} "
                                 "(AA BB CC appeared mid-sweep; header is start-of-sweep only)"
                             )
                         },
                     )
-                    await self._emit("packet_loss", {"count": count})
+                    await self._emit("packet_loss", {"count": count, "total": total})
                 await self._emit(
                     "packet",
                     {
@@ -493,6 +503,8 @@ class CaptureSession:
                         "buffered_bytes": self.assembler.buffered_bytes,
                         "expected_bytes": self.status.expected_bytes,
                         "dropped_partials": self.assembler.dropped_partials,
+                        "packet_loss": self.assembler.packet_loss,
+                        "packet_count": self.assembler.packet_count,
                     },
                 )
                 for sweep in complete:

@@ -153,6 +153,11 @@ async def data_clear() -> dict[str, Any]:
     return clear_capture_files()
 
 
+@app.post("/api/stats/clear")
+async def stats_clear() -> dict[str, Any]:
+    return await _session().clear_stats()
+
+
 def _http_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 

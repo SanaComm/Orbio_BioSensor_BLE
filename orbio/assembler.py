@@ -47,6 +47,7 @@ class SweepAssembler:
         self.began_new_sweep = False
         self.packet_loss = 0
         self.packet_loss_this_push = 0
+        self.packet_count = 0
         self.byte_count_mismatches = 0
         self.byte_count_mismatch_this_push = 0
         self.last_sweep_header: FrameHeader | None = None
@@ -70,6 +71,14 @@ class SweepAssembler:
         self._header = None
         self.began_new_sweep = False
         self.packet_loss_this_push = 0
+        self.byte_count_mismatch_this_push = 0
+
+    def clear_stats(self) -> None:
+        self.packet_loss = 0
+        self.packet_loss_this_push = 0
+        self.packet_count = 0
+        self.dropped_partials = 0
+        self.byte_count_mismatches = 0
         self.byte_count_mismatch_this_push = 0
 
     def _drop_partial(self, *, packet_loss: bool) -> None:
@@ -130,6 +139,8 @@ class SweepAssembler:
         self.byte_count_mismatch_this_push = 0
         self.began_new_sweep = stale
         complete: list[bytes] = []
+        if chunk:
+            self.packet_count += 1
 
         while stream:
             if self._need_header:

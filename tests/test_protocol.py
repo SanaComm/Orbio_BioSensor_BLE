@@ -160,6 +160,23 @@ def test_assembler_flags_header_length_mismatch() -> None:
     assert assembler.byte_count_mismatches == 1
 
 
+def test_assembler_packet_count_and_clear_stats() -> None:
+    payload = _fake_sweep()
+    assembler = SweepAssembler(timeout_s=3)
+    chunks = 0
+    now = 0.0
+    for start in range(0, SWEEP_BYTES, 240):
+        assembler.push(payload[start : start + 240], now)
+        chunks += 1
+        now += 0.01
+    assembler.packet_loss = 2
+    assert assembler.packet_count == chunks
+    assembler.clear_stats()
+    assert assembler.packet_count == 0
+    assert assembler.packet_loss == 0
+    assert assembler.dropped_partials == 0
+
+
 def test_encode_command() -> None:
     assert encode_parameter_write("3,-100,200") == b"3,-100,200"
 

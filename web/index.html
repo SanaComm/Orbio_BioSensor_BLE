@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Orbio BioSensor BLE — Phase 1</title>
-    <link rel="stylesheet" href="/static/styles.css?v=18" />
+    <link rel="stylesheet" href="/static/styles.css?v=28" />
   </head>
   <body>
     <header class="top">
@@ -38,12 +38,11 @@
               <div id="meter-fill"></div>
             </div>
             <div class="row stream-actions">
-              <button id="start-btn" type="button" disabled>Start sweep (1)</button>
-              <button id="stop-btn" type="button" disabled>Stop sweep (2)</button>
+              <button id="clear-stats-btn" type="button">Clear Stats</button>
             </div>
             <p id="meter-label" class="meter-label">0 / 4992 bytes</p>
           </div>
-          <p id="packet-loss" class="packet-loss">Packet Loss # = 0</p>
+          <p id="packet-loss" class="packet-loss">Packet Loss # = 0 / 0</p>
           <dl id="sweep-meta" class="meta"></dl>
         </section>
 
@@ -70,9 +69,37 @@
       </section>
 
       <section class="card plot-card">
-        <div class="plot-head">
-          <h2>I / Q</h2>
-          <div class="plot-actions">
+        <h2>I / Q</h2>
+        <div class="plot-stage">
+          <div class="plot-side plot-side-left">
+            <label class="plot-field">
+              <span>Center I</span>
+              <input id="plot-center-i" type="number" step="1" placeholder="auto" />
+            </label>
+            <label class="plot-field">
+              <span>Center Q</span>
+              <input id="plot-center-q" type="number" step="1" placeholder="auto" />
+            </label>
+          </div>
+          <div class="plot-main">
+            <label class="plot-field plot-freq-field">
+              <span>Freq</span>
+              <input id="plot-freq" type="text" readonly value="All" title="Scroll to step frequency. Click for All." />
+            </label>
+            <div class="plot-wrap">
+              <canvas id="iq-plot" width="480" height="480"></canvas>
+            </div>
+            <div id="iq-legend" class="iq-legend">
+              <span>700 MHz</span>
+              <span class="iq-legend-bar"></span>
+              <span>1080 MHz</span>
+            </div>
+          </div>
+          <div class="plot-side plot-side-right">
+            <label class="plot-field">
+              <span># Sweeps Shown</span>
+              <input id="sweeps-shown" type="number" min="1" max="200" step="1" value="10" />
+            </label>
             <button id="clear-iq-btn" type="button">Clear Plot</button>
             <button id="clear-data-btn" type="button">Clear Data</button>
             <select id="memory-slot" aria-label="Memory slot"></select>
@@ -80,17 +107,9 @@
             <button id="recall-mem-btn" type="button">Recall</button>
           </div>
         </div>
-        <div class="plot-wrap">
-          <canvas id="iq-plot" width="480" height="480"></canvas>
-        </div>
-        <div id="iq-legend" class="iq-legend">
-          <span>700 MHz</span>
-          <span class="iq-legend-bar"></span>
-          <span>1080 MHz</span>
-        </div>
       </section>
     </main>
 
-    <script src="/static/app.js?v=21"></script>
+    <script src="/static/app.js?v=29"></script>
   </body>
 </html>

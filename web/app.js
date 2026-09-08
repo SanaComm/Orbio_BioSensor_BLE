@@ -7,8 +7,6 @@ const meterLabel = document.getElementById("meter-label");
 const pauseBtn = document.getElementById("pause-btn");
 const disconnectBtn = document.getElementById("disconnect-btn");
 const connIndicator = document.getElementById("conn-indicator");
-const startBtn = document.getElementById("start-btn");
-const stopBtn = document.getElementById("stop-btn");
 const sendBtn = document.getElementById("send-btn");
 const rawCommand = document.getElementById("raw-command");
 const iqPlot = document.getElementById("iq-plot");
@@ -18,6 +16,11 @@ const clearDataBtn = document.getElementById("clear-data-btn");
 const saveMemBtn = document.getElementById("save-mem-btn");
 const recallMemBtn = document.getElementById("recall-mem-btn");
 const packetLossEl = document.getElementById("packet-loss");
+const clearStatsBtn = document.getElementById("clear-stats-btn");
+const plotCenterI = document.getElementById("plot-center-i");
+const plotCenterQ = document.getElementById("plot-center-q");
+const plotFreq = document.getElementById("plot-freq");
+const sweepsShownEl = document.getElementById("sweeps-shown");
 
 let lastDevice = {};
 
@@ -106,8 +109,6 @@ function renderStatus(status) {
   connIndicator.classList.toggle("on", Boolean(status.connected));
   connIndicator.classList.toggle("off", !status.connected);
   disconnectBtn.disabled = !status.connected;
-  startBtn.disabled = !status.connected;
-  stopBtn.disabled = !status.connected;
   sendBtn.disabled = !status.connected;
   pauseBtn.disabled = Boolean(status.connected);
   pauseBtn.textContent = watching ? "Pause looking" : "Resume looking";
@@ -116,7 +117,7 @@ function renderStatus(status) {
   const expected = status.expected_bytes || 4992;
   meterFill.style.width = `${Math.min(100, (buffered / expected) * 100)}%`;
   meterLabel.textContent = `${buffered} / ${expected} bytes`;
-  setPacketLoss(status.packet_loss || 0);
+  setPacketLoss(status.packet_loss || 0, status.packet_count || 0);
 
   const device = status.device || {};
   lastDevice = device;
@@ -138,10 +139,46 @@ function renderStatus(status) {
   else if (status.devices) renderDevices(status.devices, status.connected, watching);
 }
 
-function setPacketLoss(count) {
+function setPacketLoss(count, total) {
   const n = Number(count) || 0;
-  packetLossEl.textContent = `Packet Loss # = ${n}`;
+  const t = Number(total) || 0;
+  packetLossEl.textContent = `Packet Loss # = ${n} / ${t}`;
   packetLossEl.classList.toggle("alert", n > 0);
+}
+
+const FREQ_MHZ = [];
+for (let mhz = 700; mhz <= 1080; mhz += 10) FREQ_MHZ.push(mhz);
+
+let selectedFreqIndex = -1;
+
+function selectedFreqMhz() {
+  return selectedFreqIndex < 0 ? null : FREQ_MHZ[selectedFreqIndex];
+}
+
+function syncFreqDisplay() {
+  const mhz = selectedFreqMhz();
+  plotFreq.value = mhz == null ? "All" : `${mhz} MHz`;
+}
+
+function setSelectedFreq(index) {
+  if (index < -1) index = FREQ_MHZ.length - 1;
+  else if (index >= FREQ_MHZ.length) index = -1;
+  selectedFreqIndex = index;
+  syncFreqDisplay();
+  drawIqPlot(iqHistory);
+}
+
+function stepFreq(delta) {
+  if (selectedFreqIndex < 0) {
+    setSelectedFreq(delta > 0 ? 0 : FREQ_MHZ.length - 1);
+    return;
+  }
+  setSelectedFreq(selectedFreqIndex + delta);
+}
+
+function onFreqWheel(event) {
+  event.preventDefault();
+  stepFreq(event.deltaY > 0 ? 1 : -1);
 }
 
 function freqColor(mhz) {
@@ -149,15 +186,40 @@ function freqColor(mhz) {
   return `hsl(${200 - t * 160} 80% 62%)`;
 }
 
+const SWEEP_BUFFER_MAX = 200;
+let iqSweeps = [];
 let iqHistory = [];
 
-function setIqPoints(points) {
-  iqHistory = points && points.length ? points.slice() : [];
+function sweepsShownLimit() {
+  let n = Math.round(Number(sweepsShownEl.value));
+  if (!Number.isFinite(n) || n < 1) n = 1;
+  if (n > SWEEP_BUFFER_MAX) n = SWEEP_BUFFER_MAX;
+  if (String(n) !== sweepsShownEl.value) sweepsShownEl.value = String(n);
+  return n;
+}
+
+function rebuildIqHistory() {
+  iqHistory = iqSweeps.slice(-sweepsShownLimit()).flat();
   drawIqPlot(iqHistory);
 }
 
+function setIqPoints(points, replace) {
+  const incoming = points && points.length ? points.slice() : [];
+  if (replace) {
+    iqSweeps = incoming.length ? [incoming] : [];
+  } else if (incoming.length) {
+    iqSweeps.push(incoming);
+    if (iqSweeps.length > SWEEP_BUFFER_MAX) {
+      iqSweeps.splice(0, iqSweeps.length - SWEEP_BUFFER_MAX);
+    }
+  }
+  rebuildIqHistory();
+}
+
 function clearIqPlot() {
-  setIqPoints([]);
+  iqSweeps = [];
+  iqHistory = [];
+  drawIqPlot([]);
 }
 
 function selectedSlot() {
@@ -209,10 +271,19 @@ async function recallMemory() {
   const slot = selectedSlot();
   try {
     const data = await api("/api/memory/recall", { slot });
-    setIqPoints(data.points || []);
+    setIqPoints(data.points || [], true);
     log(`Recalled memory ${slot} (${(data.points || []).length} samples)`);
   } catch (error) {
     log(`Recall failed: ${error.message}`);
+  }
+}
+
+async function clearStats() {
+  try {
+    const status = await api("/api/stats/clear", {});
+    setPacketLoss(status.packet_loss || 0, status.packet_count || 0);
+  } catch (error) {
+    log(`Clear stats failed: ${error.message}`);
   }
 }
 
@@ -228,6 +299,41 @@ async function clearStoredData() {
   } catch (error) {
     log(`Clear data failed: ${error.message}`);
   }
+}
+
+let userSetCenterI = false;
+let userSetCenterQ = false;
+let syncingCenter = false;
+
+function median(values) {
+  if (!values.length) return 0;
+  const sorted = values.slice().sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2) return sorted[mid];
+  return Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+}
+
+function plotCenter(points) {
+  let i = Number(plotCenterI.value);
+  let q = Number(plotCenterQ.value);
+  const needI = !userSetCenterI || plotCenterI.value === "" || !Number.isFinite(i);
+  const needQ = !userSetCenterQ || plotCenterQ.value === "" || !Number.isFinite(q);
+  if (points.length && (needI || needQ)) {
+    syncingCenter = true;
+    if (needI) {
+      i = median(points.map((p) => p.i));
+      plotCenterI.value = String(i);
+    }
+    if (needQ) {
+      q = median(points.map((p) => p.q));
+      plotCenterQ.value = String(q);
+    }
+    syncingCenter = false;
+  }
+  return {
+    i: Number.isFinite(i) ? i : 0,
+    q: Number.isFinite(q) ? q : 0,
+  };
 }
 
 function drawIqPlot(points) {
@@ -262,52 +368,67 @@ function drawIqPlot(points) {
     return;
   }
 
-  const visible = points.filter((p) => p.i >= 0 && p.q >= 0);
-  if (!visible.length) {
-    ctx.fillStyle = "#93a4b8";
-    ctx.textAlign = "center";
-    ctx.fillText("No positive I/Q samples in this sweep…", size / 2, size / 2);
-    return;
+  const center = plotCenter(points);
+  let half = 1;
+  for (const p of points) {
+    half = Math.max(half, Math.abs(p.i - center.i), Math.abs(p.q - center.q));
   }
-
-  let maxVal = 1;
-  for (const p of visible) {
-    maxVal = Math.max(maxVal, p.i, p.q);
-  }
-  maxVal *= 1.08;
-
-  const originX = pad;
-  const originY = pad + plot;
-  const toX = (i) => originX + (i / maxVal) * plot;
-  const toY = (q) => originY - (q / maxVal) * plot;
+  half *= 1.08;
+  const mid = pad + plot / 2;
+  const toX = (i) => mid + ((i - center.i) / half) * (plot / 2);
+  const toY = (q) => mid - ((q - center.q) / half) * (plot / 2);
+  const originX = mid;
+  const originY = mid;
+  const iMin = center.i - half;
+  const iMax = center.i + half;
+  const qMin = center.q - half;
+  const qMax = center.q + half;
 
   ctx.strokeStyle = "#2a3b4d";
   ctx.beginPath();
-  ctx.moveTo(originX, originY);
-  ctx.lineTo(originX + plot, originY);
-  ctx.moveTo(originX, originY);
-  ctx.lineTo(originX, originY - plot);
+  ctx.moveTo(pad, originY);
+  ctx.lineTo(pad + plot, originY);
+  ctx.moveTo(originX, pad);
+  ctx.lineTo(originX, pad + plot);
   ctx.stroke();
 
+  const tick = (value) => String(Math.round(value));
   ctx.fillStyle = "#93a4b8";
   ctx.textAlign = "center";
-  ctx.fillText("I", originX + plot - 8 * dpr, originY - 8 * dpr);
+  ctx.fillText("I", pad + plot - 8 * dpr, originY - 8 * dpr);
   ctx.textAlign = "left";
-  ctx.fillText("Q", originX + 8 * dpr, originY - plot + 12 * dpr);
+  ctx.fillText("Q", originX + 8 * dpr, pad + 12 * dpr);
   ctx.textAlign = "center";
-  ctx.fillText("0", originX, originY + 14 * dpr);
-  ctx.fillText(String(Math.round(maxVal)), originX + plot, originY + 14 * dpr);
+  ctx.fillText(tick(iMin), pad, originY + 14 * dpr);
+  ctx.fillText(tick(center.i), originX, originY + 14 * dpr);
+  ctx.fillText(tick(iMax), pad + plot, originY + 14 * dpr);
   ctx.textAlign = "right";
-  ctx.fillText(String(Math.round(maxVal)), originX - 6 * dpr, originY - plot + 10 * dpr);
-  ctx.fillText("0", originX - 6 * dpr, originY);
+  ctx.fillText(tick(qMax), originX - 6 * dpr, pad + 10 * dpr);
+  ctx.fillText(tick(center.q), originX - 6 * dpr, originY);
+  ctx.fillText(tick(qMin), originX - 6 * dpr, pad + plot);
 
+  const selected = selectedFreqMhz();
   const r = Math.max(1.1 * dpr, 1.6);
-  const stride = visible.length > 40000 ? Math.ceil(visible.length / 40000) : 1;
-  for (let i = 0; i < visible.length; i += stride) {
-    const p = visible[i];
+  const rHi = r * 1.8;
+  const stride = points.length > 40000 ? Math.ceil(points.length / 40000) : 1;
+  for (let i = 0; i < points.length; i += stride) {
+    const p = points[i];
+    const active = selected == null || p.f === selected;
+    if (active) continue;
+    ctx.globalAlpha = 0.16;
     ctx.fillStyle = freqColor(p.f);
     ctx.beginPath();
     ctx.arc(toX(p.i), toY(p.q), r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  for (let i = 0; i < points.length; i += stride) {
+    const p = points[i];
+    const active = selected == null || p.f === selected;
+    if (!active) continue;
+    ctx.fillStyle = freqColor(p.f);
+    ctx.beginPath();
+    ctx.arc(toX(p.i), toY(p.q), selected == null ? r : rHi, 0, Math.PI * 2);
     ctx.fill();
   }
 }
@@ -349,9 +470,24 @@ async function send(command) {
 
 pauseBtn.addEventListener("click", toggleLooking);
 disconnectBtn.addEventListener("click", disconnect);
-startBtn.addEventListener("click", () => send("1"));
-stopBtn.addEventListener("click", () => send("2"));
 document.getElementById("clear-iq-btn").addEventListener("click", clearIqPlot);
+plotCenterI.addEventListener("input", () => {
+  if (syncingCenter) return;
+  userSetCenterI = plotCenterI.value.trim() !== "";
+  drawIqPlot(iqHistory);
+});
+plotCenterQ.addEventListener("input", () => {
+  if (syncingCenter) return;
+  userSetCenterQ = plotCenterQ.value.trim() !== "";
+  drawIqPlot(iqHistory);
+});
+plotCenterI.addEventListener("change", () => drawIqPlot(iqHistory));
+plotCenterQ.addEventListener("change", () => drawIqPlot(iqHistory));
+sweepsShownEl.addEventListener("change", rebuildIqHistory);
+plotFreq.addEventListener("wheel", onFreqWheel, { passive: false });
+plotFreq.addEventListener("click", () => setSelectedFreq(-1));
+iqPlot.parentElement.addEventListener("wheel", onFreqWheel, { passive: false });
+clearStatsBtn.addEventListener("click", clearStats);
 clearDataBtn.addEventListener("click", clearStoredData);
 saveMemBtn.addEventListener("click", saveMemory);
 recallMemBtn.addEventListener("click", recallMemory);
@@ -367,13 +503,14 @@ socket.addEventListener("message", (event) => {
   if (message.event === "status") renderStatus(message.payload);
   if (message.event === "devices") renderDevices(message.payload.devices || [], false, true);
   if (message.event === "packet_loss") {
-    setPacketLoss(message.payload.count);
+    setPacketLoss(message.payload.count, message.payload.total);
   }
   if (message.event === "packet") {
     const buffered = message.payload.buffered_bytes || 0;
     const expected = message.payload.expected_bytes || 4992;
     meterFill.style.width = `${Math.min(100, (buffered / expected) * 100)}%`;
     meterLabel.textContent = `${buffered} / ${expected} bytes (last chunk ${message.payload.bytes})`;
+    setPacketLoss(message.payload.packet_loss, message.payload.packet_count);
   }
   if (message.event === "plot_reset") {
     clearIqPlot();
@@ -394,13 +531,5 @@ socket.addEventListener("error", () => {
 api("/api/status").then((status) => {
   renderStatus(status);
   refreshMemories();
-  if (iqHistory.length) return;
-  if (status.iq_points && status.iq_points.length) {
-    setIqPoints(status.iq_points);
-    return;
-  }
-  return api("/api/last-sweep").then((sweep) => {
-    setIqPoints(sweep.points);
-    log(`Loaded ${sweep.name} into the I/Q plot (${sweep.n_samples} samples)`);
-  }).catch(() => drawIqPlot(iqHistory));
+  drawIqPlot([]);
 }).catch((error) => log(error.message));

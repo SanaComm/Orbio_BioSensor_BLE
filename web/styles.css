@@ -94,34 +94,125 @@ h2 {
   overflow: hidden;
 }
 
-.plot-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 6px;
-  flex-wrap: wrap;
+.plot-card > h2 {
+  margin: 0 0 4px;
 }
 
-.plot-head h2 {
+.plot-stage {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px 10px;
+  align-items: stretch;
+}
+
+.plot-side {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+}
+
+.plot-side-left {
+  align-items: center;
+}
+
+.plot-side-right {
+  align-items: stretch;
+  min-width: 10.5rem;
+}
+
+.plot-main {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.plot-freq-field {
+  flex-shrink: 0;
+  margin-bottom: 2px;
+}
+
+.plot-field {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  text-align: center;
+}
+
+.plot-field span {
+  width: 100%;
+  text-align: center;
+}
+
+.plot-side-right .plot-field span {
+  white-space: normal;
+}
+
+.plot-side-right button,
+.plot-side-right select,
+.plot-field input {
+  height: 30px;
+  box-sizing: border-box;
+  padding: 4px 10px;
+  font-size: 12px;
   margin: 0;
 }
 
-.plot-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
+.plot-field input {
+  width: 104px;
+  padding: 4px 6px;
+  text-align: center;
 }
 
-.plot-actions button,
-.plot-actions select {
-  padding: 4px 10px;
-  font-size: 12px;
+.plot-field input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
 }
 
-.plot-actions select {
-  max-width: 220px;
+.plot-field input[type="number"]::-webkit-outer-spin-button,
+.plot-field input[type="number"]::-webkit-inner-spin-button {
+  appearance: none;
+  margin: 0;
+}
+
+#plot-freq {
+  width: 92px;
+  cursor: ns-resize;
+  text-align: center;
+}
+
+#sweeps-shown {
+  width: 100%;
+  text-align: center;
+}
+
+.plot-side-right button,
+.plot-side-right select {
+  width: 100%;
+  text-align: center;
+}
+
+.plot-side-right select,
+#memory-slot {
+  min-width: 0;
+  padding-left: 28px;
+  padding-right: 28px;
+  text-align: center;
+  text-align-last: center;
+  background-color: #0f1720;
+  color: var(--ink);
+}
+
+.plot-side-right select option {
+  text-align: center;
 }
 
 .log-card {
@@ -156,6 +247,7 @@ h2 {
 .stream-actions {
   grid-area: actions;
   flex-wrap: nowrap;
+  justify-content: flex-end;
 }
 
 .stream-top .meter-label {
@@ -167,6 +259,7 @@ h2 {
   white-space: nowrap;
   padding: 6px 8px;
   font-size: 12px;
+  min-width: 7.8em;
 }
 
 .packet-loss {
@@ -267,13 +360,33 @@ label {
 }
 
 input,
-button {
+button,
+select {
   background: #0f1720;
   color: var(--ink);
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 8px 10px;
   font: inherit;
+  color-scheme: dark;
+}
+
+select {
+  appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path fill='%2393a4b8' d='M1 1l5 5 5-5'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  padding-right: 26px;
+  cursor: pointer;
+}
+
+select option {
+  background: #0f1720;
+  color: #e7eef6;
+}
+
+select:hover {
+  border-color: var(--accent);
 }
 
 button {
@@ -369,6 +482,7 @@ button:disabled {
 .plot-wrap {
   flex: 1;
   min-height: 0;
+  width: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -377,6 +491,7 @@ button:disabled {
 
 #iq-plot {
   display: block;
+  box-sizing: content-box;
   background: #0b1117;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -390,6 +505,8 @@ button:disabled {
   font-size: 12px;
   color: var(--muted);
   flex-shrink: 0;
+  width: 100%;
+  max-width: 100%;
 }
 
 .iq-legend-bar {
@@ -436,6 +553,11 @@ button:disabled {
 
   .log {
     min-height: 220px;
+  }
+
+  .plot-stage {
+    grid-template-columns: 1fr;
+    justify-items: center;
   }
 
   .plot-wrap {
