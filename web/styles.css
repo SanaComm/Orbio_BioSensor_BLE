@@ -311,6 +311,12 @@ code {
   background: color-mix(in srgb, var(--ok) 16%, transparent);
 }
 
+.conn-indicator.scan {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
 .device-body {
   display: grid;
   grid-template-columns: minmax(132px, 0.85fr) minmax(0, 1.5fr);

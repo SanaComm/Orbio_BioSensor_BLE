@@ -82,8 +82,8 @@ function renderDevices(devices, connected, watching) {
   if (!devices || devices.length === 0) {
     const empty = document.createElement("li");
     empty.textContent = watching
-      ? "Looking for Orbio… will connect automatically."
-      : "Looking is paused. Resume to keep waiting for the remote.";
+      ? "Scanning for Orbio… will connect automatically."
+      : "Scanning is paused. Resume Scanning to keep waiting for the remote.";
     deviceList.append(empty);
     return;
   }
@@ -105,9 +105,17 @@ function renderDevices(devices, connected, watching) {
 
 function renderStatus(status) {
   const watching = Boolean(status.watching);
-  connIndicator.textContent = status.connected ? "Connected" : "Not Connected";
-  connIndicator.classList.toggle("on", Boolean(status.connected));
-  connIndicator.classList.toggle("off", !status.connected);
+  connIndicator.classList.remove("on", "off", "scan");
+  if (status.connected) {
+    connIndicator.textContent = "Connected";
+    connIndicator.classList.add("on");
+  } else if (watching) {
+    connIndicator.textContent = "Scanning";
+    connIndicator.classList.add("scan");
+  } else {
+    connIndicator.textContent = "Not Connected";
+    connIndicator.classList.add("off");
+  }
   disconnectBtn.disabled = !status.connected;
   sendBtn.disabled = !status.connected;
   pauseBtn.disabled = Boolean(status.connected);
