@@ -20,7 +20,7 @@ That starts a standalone desktop window. A Desktop shortcut named **Orbio BioSen
 
 `--browser` opens the old tab at `http://127.0.0.1:8765/` instead. `--simulate` uses a fake device.
 
-Without hardware, add `--simulate`. The fake `Orbio-sim001` device appears automatically; Connect, then **Start sweep**. Fake 4992-byte frames are written under `data\`.
+Without hardware, add `--simulate`. The fake `Orbio-sim001` device is found automatically. After connect, send `1` from **Control** to start a sweep. Fake 4992-byte frames are written under `data\`.
 
 ## How the remote behaves
 
@@ -28,8 +28,8 @@ From `R:\My Documents\Orbio Health\BioSensor 2026\Orbio Biosensor BLE.pdf`:
 
 - Advertised name: `Orbio-` plus 6 characters from the Bluetooth ID
 - The device advertises just before a sweep. Default is 30 s sweep, 10 min sleep, so keep scanning until it appears
-- After connect, the app enables Sweep Data notifications. The remote only transfers a sweep if notifications are enabled
-- One sweep is 4992 bytes: 32 I/Q samples × 39 frequencies (700–1080 MHz, 10 MHz steps), 16-bit I and 16-bit Q, split across BLE packets of up to 240 bytes
+- The app starts in **Scanning**. **Pause Scanning** / **Resume Scanning** stop or restart that watch. After connect the status shows **Connected**, and Sweep Data notifications are enabled. The remote only transfers a sweep if notifications stay enabled
+- One sweep is 4992 bytes: 32 I/Q samples × 39 frequencies (700–1080 MHz, 10 MHz steps), 16-bit I and 16-bit Q, split across BLE packets of up to 240 bytes. A 10-byte header (`AA BB CC`, type, timestamp, length) appears only at the start of each sweep
 - PPG and accelerometer formats are still TBD in the spec, so they are not captured yet
 
 ## What gets saved
@@ -44,17 +44,14 @@ The CSV layout assumed for Phase 1 (the PDF figure was not machine-readable) is:
 
 ## How the I/Q plot works
 
-The desktop window plots **one completed 4992-byte sweep at a time**. That frame is 39 frequencies × 32 samples = 1248 I/Q points. Start sweep (`1`) can produce many of those frames in a row (default 30 s on, then sleep). The plot does **not** overlay frames.
+The plot starts **blank**. Each completed 4992-byte sweep is 39 frequencies × 32 samples = 1248 I/Q points. **# Sweeps Shown** (default **10**) overlays the last N completed frames. Send `1` from Control to start a sweep set (that also clears the overlay). Send `2` to stop.
 
 - **I** is the horizontal axis, **Q** is the vertical axis. Color runs from 700 MHz (blue) to 1080 MHz (yellow).
-- Axes autoscale to the largest |I| or |Q| in the frame currently on screen (plus a small margin).
-- **Start sweep (`1`)** wipes the canvas immediately.
-- The **first BLE packet of the next 4992-byte frame** also wipes it, so you may briefly see “Waiting for a sweep…”.
-- When that frame is complete, those 1248 points **replace** everything. The previous frame is gone.
+- The crosshair is at **Center I** / **Center Q**. Those fill from the data until you type values. Both axes share the same autoscale around that center.
+- Hover the plot or **Freq** and use the mouse wheel to highlight one frequency (700–1080 MHz, 10 MHz steps). Click **Freq** for All.
+- Stream shows **Packet Loss # = lost / total BLE packets**. **Clear Stats** zeros that count.
 
-A cluster that stays in the same quadrant is in almost every frame. Points that appear and then vanish were in one frame and not in the next. That is replacement, not leftover ink.
-
-**Clear Plot** empties the on-screen drawing only. **Clear Data** deletes captured `data/sweep_*` files and leaves the five memory slots. **Save** / **Recall** store a copy of whatever is on the plot in a slot; that is the only intentional persistence.
+**Clear Plot** empties the on-screen drawing only. **Clear Data** deletes captured `data/sweep_*` files and leaves the five memory slots. **Save** / **Recall** store a copy of whatever is on the plot in a slot.
 
 ## Controls
 
