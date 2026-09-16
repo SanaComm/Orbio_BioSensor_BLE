@@ -483,6 +483,11 @@ button:disabled {
   grid-template-columns: max-content 1fr;
   gap: 8px;
   align-items: baseline;
+  cursor: pointer;
+}
+
+.commands li:hover code {
+  color: var(--accent);
 }
 
 .plot-wrap {
@@ -495,12 +500,32 @@ button:disabled {
   position: relative;
 }
 
+.plot-card[data-mode="ppg"] .plot-iq-only,
+.plot-card[data-mode="accel"] .plot-iq-only {
+  display: none;
+}
+
+.plot-card[data-mode="ppg"] .plot-stage,
+.plot-card[data-mode="accel"] .plot-stage {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.plot-card[data-mode="ppg"] .plot-main,
+.plot-card[data-mode="accel"] .plot-main {
+  align-items: stretch;
+}
+
 #iq-plot {
   display: block;
   box-sizing: content-box;
   background: #0b1117;
   border: 1px solid var(--line);
   border-radius: 10px;
+}
+
+#iq-plot.time-plot {
+  width: 100%;
+  height: 100%;
 }
 
 .iq-legend {

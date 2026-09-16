@@ -18,6 +18,8 @@ data/*.json
 data/memories/
 !data/.gitkeep
 
+docs/_pdf_preview/
+
 # OS / editor
 Thumbs.db
 .DS_Store

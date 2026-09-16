@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Orbio BioSensor BLE — Phase 1</title>
-    <link rel="stylesheet" href="/static/styles.css?v=29" />
+    <title>Orbio BioSensor BLE</title>
+    <link rel="stylesheet" href="/static/styles.css?v=31" />
   </head>
   <body>
     <header class="top">
@@ -49,16 +49,22 @@
         <section class="card control-card">
           <h2>Control</h2>
           <div class="row">
-            <input id="raw-command" type="text" placeholder="e.g. 4,830 or 7,30,600" />
+            <input id="raw-command" type="text" placeholder="e.g. 13,830 or 20" />
             <button id="send-btn" type="button" disabled>Send</button>
           </div>
           <ul class="commands">
-            <li><code>1</code> start sweep</li>
-            <li><code>2</code> stop sweep</li>
-            <li><code>3,-100,200</code> I/Q offsets mV</li>
-            <li><code>4,830</code> frequency MHz</li>
-            <li><code>6,1,7</code> LNA, VGA</li>
-            <li><code>7,30,600</code> sweep s, interval s</li>
+            <li><code>10</code> start sweep</li>
+            <li><code>11</code> stop sweep</li>
+            <li><code>12,-100,200</code> I/Q offsets mV</li>
+            <li><code>13,830</code> frequency MHz</li>
+            <li><code>15,1,7</code> LNA, VGA</li>
+            <li><code>16,30,600</code> sweep s, interval s</li>
+            <li><code>20</code> start PPG</li>
+            <li><code>21</code> stop PPG</li>
+            <li><code>30</code> start accel</li>
+            <li><code>31</code> stop accel</li>
+            <li><code>40,1</code> print samples on</li>
+            <li><code>40,0</code> print samples off</li>
           </ul>
         </section>
       </div>
@@ -68,10 +74,10 @@
         <pre id="log" class="log"></pre>
       </section>
 
-      <section class="card plot-card">
-        <h2>I / Q</h2>
+      <section class="card plot-card" id="plot-card" data-mode="iq">
+        <h2 id="plot-title">I / Q</h2>
         <div class="plot-stage">
-          <div class="plot-side plot-side-left">
+          <div class="plot-side plot-side-left plot-iq-only">
             <label class="plot-field">
               <span>Center I</span>
               <input id="plot-center-i" type="number" step="1" placeholder="auto" />
@@ -82,21 +88,21 @@
             </label>
           </div>
           <div class="plot-main">
-            <label class="plot-field plot-freq-field">
+            <label class="plot-field plot-freq-field plot-iq-only">
               <span>Freq</span>
               <input id="plot-freq" type="text" readonly value="All" title="Scroll to step frequency. Click for All." />
             </label>
             <div class="plot-wrap">
               <canvas id="iq-plot" width="480" height="480"></canvas>
             </div>
-            <div id="iq-legend" class="iq-legend">
+            <div id="iq-legend" class="iq-legend plot-iq-only">
               <span>700 MHz</span>
               <span class="iq-legend-bar"></span>
               <span>1080 MHz</span>
             </div>
           </div>
           <div class="plot-side plot-side-right">
-            <label class="plot-field">
+            <label class="plot-field plot-iq-only">
               <span># Sweeps Shown</span>
               <input id="sweeps-shown" type="number" min="1" max="200" step="1" value="10" />
             </label>
@@ -110,6 +116,6 @@
       </section>
     </main>
 
-    <script src="/static/app.js?v=33"></script>
+    <script src="/static/app.js?v=38"></script>
   </body>
 </html>

@@ -21,8 +21,24 @@ const plotCenterI = document.getElementById("plot-center-i");
 const plotCenterQ = document.getElementById("plot-center-q");
 const plotFreq = document.getElementById("plot-freq");
 const sweepsShownEl = document.getElementById("sweeps-shown");
+const plotCard = document.getElementById("plot-card");
+const plotTitle = document.getElementById("plot-title");
 
 let lastDevice = {};
+let plotMode = "iq";
+const TIME_WINDOW = 500;
+const PPG_COLORS = ["#5b8def", "#3ec6b4", "#e2b15a", "#e07a6a", "#c084fc", "#f472b6", "#4ade80", "#fb923c"];
+const ACCEL_COLORS = { x: "#fb923c", y: "#f472b6", z: "#4ade80" };
+let ppgSeries = emptyPpgSeries();
+let accelSeries = emptyAccelSeries();
+
+function emptyPpgSeries() {
+  return Array.from({ length: 8 }, () => []);
+}
+
+function emptyAccelSeries() {
+  return { x: [], y: [], z: [] };
+}
 
 function log(message) {
   const time = new Date().toLocaleTimeString();
@@ -62,6 +78,28 @@ function setSweepMeta(sweep) {
     ["I range", `${sweep.i_min} .. ${sweep.i_max}`],
     ["Q range", `${sweep.q_min} .. ${sweep.q_max}`],
     ["CSV", fileName(sweep.csv_path)],
+  ]);
+}
+
+function setPpgMeta(ppg) {
+  setMeta(sweepMeta, [
+    ["Last PPG", `#${ppg.index}`],
+    ["Samples", ppg.n_samples],
+    ["Bytes", ppg.n_bytes],
+    ["Value range", `${ppg.value_min} .. ${ppg.value_max}`],
+    ["CSV", fileName(ppg.csv_path)],
+  ]);
+}
+
+function setAccelMeta(accel) {
+  setMeta(sweepMeta, [
+    ["Last accel", `#${accel.index}`],
+    ["Samples", accel.n_samples],
+    ["Bytes", accel.n_bytes],
+    ["X range", `${accel.x_min} .. ${accel.x_max}`],
+    ["Y range", `${accel.y_min} .. ${accel.y_max}`],
+    ["Z range", `${accel.z_min} .. ${accel.z_max}`],
+    ["CSV", fileName(accel.csv_path)],
   ]);
 }
 
@@ -138,10 +176,14 @@ function renderStatus(status) {
     ["Firmware", status.fw_id],
     ["Parameters", status.parameters ? status.parameters.raw : null],
     ["Sweeps saved", status.sweep_count],
+    ["PPG saved", status.ppg_count],
+    ["Accel saved", status.accel_count],
   ]);
 
-  const sweep = status.last_sweep;
-  if (sweep) setSweepMeta(sweep);
+  if (status.plot_mode) setPlotMode(status.plot_mode);
+  if (status.plot_mode === "ppg" && status.last_ppg) setPpgMeta(status.last_ppg);
+  else if (status.plot_mode === "accel" && status.last_accel) setAccelMeta(status.last_accel);
+  else if (status.last_sweep) setSweepMeta(status.last_sweep);
 
   if (status.connected) deviceList.innerHTML = "";
   else if (status.devices) renderDevices(status.devices, status.connected, watching);
@@ -173,7 +215,7 @@ function setSelectedFreq(index) {
   else if (index >= FREQ_MHZ.length) index = -1;
   selectedFreqIndex = index;
   syncFreqDisplay();
-  drawIqPlot(iqHistory);
+  redrawPlot();
 }
 
 function stepFreq(delta) {
@@ -185,6 +227,7 @@ function stepFreq(delta) {
 }
 
 function onFreqWheel(event) {
+  if (plotMode !== "iq") return;
   event.preventDefault();
   stepFreq(event.deltaY > 0 ? 1 : -1);
 }
@@ -208,7 +251,7 @@ function sweepsShownLimit() {
 
 function rebuildIqHistory() {
   iqHistory = iqSweeps.slice(-sweepsShownLimit()).flat();
-  drawIqPlot(iqHistory);
+  redrawPlot();
 }
 
 function setIqPoints(points, replace) {
@@ -224,14 +267,206 @@ function setIqPoints(points, replace) {
   rebuildIqHistory();
 }
 
-function clearIqPlot() {
+function clearIqBuffers() {
   iqSweeps = [];
   iqHistory = [];
-  drawIqPlot([]);
+}
+
+function clearCurrentPlot() {
+  if (plotMode === "ppg") ppgSeries = emptyPpgSeries();
+  else if (plotMode === "accel") accelSeries = emptyAccelSeries();
+  else clearIqBuffers();
+  redrawPlot();
+}
+
+function appendPpgSamples(samples) {
+  for (const row of samples || []) {
+    const ch = Number(row.ch);
+    if (ch < 1 || ch > 8) continue;
+    const series = ppgSeries[ch - 1];
+    series.push(Number(row.v));
+    if (series.length > TIME_WINDOW) series.splice(0, series.length - TIME_WINDOW);
+  }
+  redrawPlot();
+}
+
+function appendAccelSamples(samples) {
+  for (const row of samples || []) {
+    accelSeries.x.push(Number(row.x));
+    accelSeries.y.push(Number(row.y));
+    accelSeries.z.push(Number(row.z));
+  }
+  for (const key of ["x", "y", "z"]) {
+    if (accelSeries[key].length > TIME_WINDOW) {
+      accelSeries[key].splice(0, accelSeries[key].length - TIME_WINDOW);
+    }
+  }
+  redrawPlot();
+}
+
+function setPlotMode(mode) {
+  const next = mode === "ppg" || mode === "accel" ? mode : "iq";
+  const changed = next !== plotMode;
+  plotMode = next;
+  if (plotCard) plotCard.dataset.mode = plotMode;
+  if (plotTitle) {
+    plotTitle.textContent = plotMode === "ppg" ? "PPG" : plotMode === "accel" ? "Accel" : "I / Q";
+  }
+  iqPlot.classList.toggle("time-plot", plotMode !== "iq");
+  if (changed) refreshMemories();
+}
+
+function redrawPlot() {
+  if (plotMode === "ppg") {
+    drawStackedPlot(
+      ppgSeries.map((values, i) => ({
+        label: `Ch ${i + 1}`,
+        color: PPG_COLORS[i],
+        values,
+      })),
+      "Waiting for PPG…"
+    );
+    return;
+  }
+  if (plotMode === "accel") {
+    drawStackedPlot(
+      [
+        { label: "X", color: ACCEL_COLORS.x, values: accelSeries.x },
+        { label: "Y", color: ACCEL_COLORS.y, values: accelSeries.y },
+        { label: "Z", color: ACCEL_COLORS.z, values: accelSeries.z },
+      ],
+      "Waiting for accel…"
+    );
+    return;
+  }
+  drawIqPlot(iqHistory);
+}
+
+function seriesExtent(values) {
+  if (!values.length) return { min: 0, max: 1 };
+  let min = values[0];
+  let max = values[0];
+  for (const v of values) {
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  if (min === max) {
+    min -= 1;
+    max += 1;
+  }
+  const pad = (max - min) * 0.08;
+  return { min: min - pad, max: max + pad };
+}
+
+function drawStackedPlot(channels, emptyLabel) {
+  const box = iqPlot.parentElement;
+  const cssW = Math.max(160, Math.floor((box && box.clientWidth) || 480));
+  const cssH = Math.max(200, Math.floor((box && box.clientHeight) || 360));
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.round(cssW * dpr);
+  const height = Math.round(cssH * dpr);
+  if (iqPlot.width !== width || iqPlot.height !== height) {
+    iqPlot.width = width;
+    iqPlot.height = height;
+  }
+  iqPlot.style.width = `${cssW}px`;
+  iqPlot.style.height = `${cssH}px`;
+  const ctx = iqCtx;
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = "#0b1117";
+  ctx.fillRect(0, 0, width, height);
+
+  const hasData = channels.some((ch) => ch.values.length);
+  if (!hasData) {
+    ctx.fillStyle = "#93a4b8";
+    ctx.font = `${Math.round(12 * dpr)}px Segoe UI, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.fillText(emptyLabel, width / 2, height / 2);
+    return;
+  }
+
+  const n = channels.length;
+  const left = Math.round(52 * dpr);
+  const right = Math.round(46 * dpr);
+  const top = Math.round(6 * dpr);
+  const gap = Math.round(4 * dpr);
+  const stripH = Math.floor((height - top - gap * (n - 1)) / n);
+  const plotW = width - left - right;
+  ctx.font = `${Math.round(10 * dpr)}px Segoe UI, sans-serif`;
+  ctx.lineWidth = Math.max(1, dpr);
+
+  for (let i = 0; i < n; i++) {
+    const ch = channels[i];
+    const y0 = top + i * (stripH + gap);
+    ctx.fillStyle = "#101820";
+    ctx.fillRect(left, y0, plotW, stripH);
+    ctx.strokeStyle = "#2a3b4d";
+    ctx.strokeRect(left + 0.5, y0 + 0.5, plotW - 1, stripH - 1);
+
+    const { min, max } = seriesExtent(ch.values);
+    const span = max - min || 1;
+    const toX = (index) => left + (index / Math.max(1, TIME_WINDOW - 1)) * plotW;
+    const toY = (value) => y0 + stripH - ((value - min) / span) * stripH;
+
+    if (ch.values.length > 1) {
+      ctx.beginPath();
+      ctx.strokeStyle = ch.color;
+      ctx.lineWidth = Math.max(1.2, 1.2 * dpr);
+      ch.values.forEach((value, index) => {
+        const x = toX(index);
+        const y = toY(value);
+        if (index === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = "#93a4b8";
+    ctx.textAlign = "right";
+    ctx.fillText(String(Math.round(max)), left - 4 * dpr, y0 + 10 * dpr);
+    ctx.fillText(String(Math.round(min)), left - 4 * dpr, y0 + stripH - 2 * dpr);
+    ctx.fillStyle = ch.color;
+    ctx.textAlign = "left";
+    ctx.fillText(ch.label, left + plotW + 6 * dpr, y0 + stripH / 2);
+  }
 }
 
 function selectedSlot() {
   return Number(memorySlot.value) || 1;
+}
+
+function currentMemoryKind() {
+  return plotMode === "ppg" || plotMode === "accel" ? plotMode : "iq";
+}
+
+function memoryKindLabel(kind) {
+  if (kind === "ppg") return "PPG";
+  if (kind === "accel") return "accel";
+  return "I/Q";
+}
+
+function currentPlotHasData() {
+  if (plotMode === "ppg") return ppgSeries.some((channel) => channel.length);
+  if (plotMode === "accel") return accelSeries.x.length || accelSeries.y.length || accelSeries.z.length;
+  return iqHistory.length > 0;
+}
+
+function clonePpgSeries(series) {
+  const next = emptyPpgSeries();
+  if (!Array.isArray(series)) return next;
+  for (let i = 0; i < 8; i += 1) {
+    next[i] = Array.isArray(series[i]) ? series[i].slice(-TIME_WINDOW) : [];
+  }
+  return next;
+}
+
+function cloneAccelSeries(series) {
+  const next = emptyAccelSeries();
+  if (!series || typeof series !== "object") return next;
+  for (const key of ["x", "y", "z"]) {
+    next[key] = Array.isArray(series[key]) ? series[key].slice(-TIME_WINDOW) : [];
+  }
+  return next;
 }
 
 function renderMemoryOptions(memories, keepSlot) {
@@ -248,7 +483,8 @@ function renderMemoryOptions(memories, keepSlot) {
 
 async function refreshMemories() {
   try {
-    const data = await api("/api/memories");
+    const kind = currentMemoryKind();
+    const data = await api(`/api/memories?kind=${encodeURIComponent(kind)}`);
     renderMemoryOptions(data.memories);
   } catch (error) {
     log(`Memory list failed: ${error.message}`);
@@ -256,20 +492,25 @@ async function refreshMemories() {
 }
 
 async function saveMemory() {
-  if (!iqHistory.length) {
-    log("Nothing on the plot to save. Capture or recall a sweep first.");
+  if (!currentPlotHasData()) {
+    log("Nothing on the plot to save. Capture or recall data first.");
     return;
   }
   const slot = selectedSlot();
+  const kind = currentMemoryKind();
+  const body = {
+    slot,
+    kind,
+    device_name: lastDevice.name || null,
+    device_address: lastDevice.address || null,
+  };
+  if (kind === "ppg") body.series = ppgSeries;
+  else if (kind === "accel") body.series = accelSeries;
+  else body.points = iqHistory;
   try {
-    const result = await api("/api/memory/save", {
-      slot,
-      points: iqHistory,
-      device_name: lastDevice.name || null,
-      device_address: lastDevice.address || null,
-    });
+    const result = await api("/api/memory/save", body);
     renderMemoryOptions(result.memories, slot);
-    log(`Saved ${result.n_samples} samples to memory ${slot}`);
+    log(`Saved ${result.n_samples} samples to ${memoryKindLabel(kind)} memory ${slot}`);
   } catch (error) {
     log(`Save failed: ${error.message}`);
   }
@@ -277,10 +518,22 @@ async function saveMemory() {
 
 async function recallMemory() {
   const slot = selectedSlot();
+  const kind = currentMemoryKind();
   try {
-    const data = await api("/api/memory/recall", { slot });
-    setIqPoints(data.points || [], true);
-    log(`Recalled memory ${slot} (${(data.points || []).length} samples)`);
+    const data = await api("/api/memory/recall", { slot, kind });
+    if (kind === "ppg") {
+      ppgSeries = clonePpgSeries(data.series);
+      redrawPlot();
+      const n = ppgSeries.reduce((sum, channel) => sum + channel.length, 0);
+      log(`Recalled PPG memory ${slot} (${n} samples)`);
+    } else if (kind === "accel") {
+      accelSeries = cloneAccelSeries(data.series);
+      redrawPlot();
+      log(`Recalled accel memory ${slot} (${(accelSeries.x || []).length} samples)`);
+    } else {
+      setIqPoints(data.points || [], true);
+      log(`Recalled I/Q memory ${slot} (${(data.points || []).length} samples)`);
+    }
   } catch (error) {
     log(`Recall failed: ${error.message}`);
   }
@@ -297,12 +550,12 @@ async function clearStats() {
 
 async function clearStoredData() {
   const ok = window.confirm(
-    "Delete all captured sweep files in data/? The five memory slots are kept."
+    "Delete all captured sweep, PPG, and accel files in data/? Memory slots (I/Q, PPG, and accel) are kept."
   );
   if (!ok) return;
   try {
     const result = await api("/api/data/clear", {});
-    renderMemoryOptions(result.memories, selectedSlot());
+    await refreshMemories();
     log(`Cleared ${result.deleted} capture files. Memories were not deleted.`);
   } catch (error) {
     log(`Clear data failed: ${error.message}`);
@@ -442,11 +695,11 @@ function drawIqPlot(points) {
 }
 
 window.addEventListener("resize", () => {
-  drawIqPlot(iqHistory);
+  redrawPlot();
 });
 
 if (window.ResizeObserver && iqPlot.parentElement) {
-  new ResizeObserver(() => drawIqPlot(iqHistory)).observe(iqPlot.parentElement);
+  new ResizeObserver(() => redrawPlot()).observe(iqPlot.parentElement);
 }
 
 async function toggleLooking() {
@@ -478,19 +731,19 @@ async function send(command) {
 
 pauseBtn.addEventListener("click", toggleLooking);
 disconnectBtn.addEventListener("click", disconnect);
-document.getElementById("clear-iq-btn").addEventListener("click", clearIqPlot);
+document.getElementById("clear-iq-btn").addEventListener("click", clearCurrentPlot);
 plotCenterI.addEventListener("input", () => {
   if (syncingCenter) return;
   userSetCenterI = plotCenterI.value.trim() !== "";
-  drawIqPlot(iqHistory);
+  redrawPlot();
 });
 plotCenterQ.addEventListener("input", () => {
   if (syncingCenter) return;
   userSetCenterQ = plotCenterQ.value.trim() !== "";
-  drawIqPlot(iqHistory);
+  redrawPlot();
 });
-plotCenterI.addEventListener("change", () => drawIqPlot(iqHistory));
-plotCenterQ.addEventListener("change", () => drawIqPlot(iqHistory));
+plotCenterI.addEventListener("change", () => redrawPlot());
+plotCenterQ.addEventListener("change", () => redrawPlot());
 sweepsShownEl.addEventListener("change", rebuildIqHistory);
 plotFreq.addEventListener("wheel", onFreqWheel, { passive: false });
 plotFreq.addEventListener("click", () => setSelectedFreq(-1));
@@ -499,9 +752,23 @@ clearStatsBtn.addEventListener("click", clearStats);
 clearDataBtn.addEventListener("click", clearStoredData);
 saveMemBtn.addEventListener("click", saveMemory);
 recallMemBtn.addEventListener("click", recallMemory);
-sendBtn.addEventListener("click", () => {
+function submitControl() {
+  if (sendBtn.disabled) return;
   const command = rawCommand.value.trim();
   if (command) send(command);
+}
+
+sendBtn.addEventListener("click", submitControl);
+rawCommand.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  submitControl();
+});
+document.querySelectorAll(".commands li").forEach((item) => {
+  item.addEventListener("click", () => {
+    const code = item.querySelector("code");
+    if (code) rawCommand.value = code.textContent;
+  });
 });
 
 const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
@@ -520,12 +787,22 @@ socket.addEventListener("message", (event) => {
     meterLabel.textContent = `${buffered} / ${expected} bytes (last chunk ${message.payload.bytes})`;
     setPacketLoss(message.payload.packet_loss, message.payload.packet_count);
   }
+  if (message.event === "plot_mode") setPlotMode(message.payload.mode);
   if (message.event === "plot_reset") {
-    clearIqPlot();
+    if (message.payload && message.payload.mode) setPlotMode(message.payload.mode);
+    clearCurrentPlot();
   }
   if (message.event === "sweep") {
     setSweepMeta(message.payload);
-    if (message.payload.points) setIqPoints(message.payload.points);
+    if (plotMode === "iq" && message.payload.points) setIqPoints(message.payload.points);
+  }
+  if (message.event === "ppg") {
+    setPpgMeta(message.payload);
+    appendPpgSamples(message.payload.samples || []);
+  }
+  if (message.event === "accel") {
+    setAccelMeta(message.payload);
+    appendAccelSamples(message.payload.samples || []);
   }
 });
 socket.addEventListener("open", () => log("UI connected to local capture service"));
@@ -539,5 +816,5 @@ socket.addEventListener("error", () => {
 api("/api/status").then((status) => {
   renderStatus(status);
   refreshMemories();
-  drawIqPlot([]);
+  redrawPlot();
 }).catch((error) => log(error.message));

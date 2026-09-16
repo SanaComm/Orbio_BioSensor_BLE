@@ -2,19 +2,31 @@ import struct
 
 from orbio.assembler import SweepAssembler
 from orbio.protocol import (
+    ACCEL_BYTES_PER_SAMPLE,
     FREQ_MHZ,
     FRAME_HEADER_BYTES,
     MAX_NOTIFY_BYTES,
     N_SAMPLES,
     PACKET_MAGIC,
+    PACKET_TYPE_ACCEL,
+    PACKET_TYPE_PPG,
+    PPG_TYPICAL_BYTES,
     SWEEP_BYTES,
+    encode_frame_header,
     encode_parameter_write,
+    encode_ppg_sample,
     encode_sweep_header,
     is_orbio_advertised_name,
+    parse_accel,
     parse_frame_header,
+    parse_ppg,
     parse_sweep,
 )
-from orbio.radio import _fake_sweep
+from orbio.radio import _fake_accel, _fake_ppg, _fake_sweep
+
+
+def payloads(frames):
+    return [frame.payload for frame in frames]
 
 
 def test_sweep_size_and_frequency_count() -> None:
@@ -69,7 +81,7 @@ def test_assembler_joins_240_byte_chunks() -> None:
         else:
             assert not assembler.began_new_sweep
         now += 0.01
-    assert complete == [payload]
+    assert payloads(complete) == [payload]
     assert assembler.buffered_bytes == 0
     assert assembler.last_byte_count_ok
     assert assembler.last_assembled_bytes == SWEEP_BYTES
@@ -100,7 +112,7 @@ def test_assembler_strips_leading_sweep_header() -> None:
     header = encode_sweep_header(timestamp=99)
     assembler = SweepAssembler(timeout_s=3)
     complete = assembler.push(header + payload, 0.0)
-    assert complete == [payload]
+    assert payloads(complete) == [payload]
     assert assembler.packet_loss == 0
     assert assembler.buffered_bytes == 0
     assert assembler.last_sweep_header is not None
@@ -117,7 +129,7 @@ def test_assembler_header_only_on_first_ble_packet() -> None:
     for start in range(0, len(frame), MAX_NOTIFY_BYTES):
         complete.extend(assembler.push(frame[start : start + MAX_NOTIFY_BYTES], now))
         now += 0.01
-    assert complete == [payload]
+    assert payloads(complete) == [payload]
     assert assembler.packet_loss == 0
     assert assembler.last_assembled_bytes == SWEEP_BYTES
     assert assembler.last_byte_count_ok
@@ -131,7 +143,7 @@ def test_assembler_strips_header_split_across_chunks() -> None:
     complete.extend(assembler.push(header[:2], 0.0))
     complete.extend(assembler.push(header[2:] + payload[:100], 0.01))
     complete.extend(assembler.push(payload[100:], 0.02))
-    assert complete == [payload]
+    assert payloads(complete) == [payload]
     assert assembler.packet_loss == 0
 
 
@@ -145,7 +157,7 @@ def test_assembler_counts_mid_sweep_header_as_packet_loss() -> None:
     assert assembler.packet_loss == 1
     assert assembler.packet_loss_this_push == 1
     assert assembler.began_new_sweep
-    assert complete == [payload]
+    assert payloads(complete) == [payload]
     assert assembler.buffered_bytes == 0
 
 
@@ -154,7 +166,7 @@ def test_assembler_flags_header_length_mismatch() -> None:
     header = encode_sweep_header(payload_bytes=100)
     assembler = SweepAssembler(timeout_s=3)
     complete = assembler.push(header + payload[:100], 0.0)
-    assert complete == [payload[:100]]
+    assert payloads(complete) == [payload[:100]]
     assert assembler.last_assembled_bytes == 100
     assert not assembler.last_byte_count_ok
     assert assembler.byte_count_mismatches == 1
@@ -178,7 +190,7 @@ def test_assembler_packet_count_and_clear_stats() -> None:
 
 
 def test_encode_command() -> None:
-    assert encode_parameter_write("3,-100,200") == b"3,-100,200"
+    assert encode_parameter_write("12,-100,200") == b"12,-100,200"
 
 
 def test_orbio_name_filter() -> None:
@@ -187,3 +199,74 @@ def test_orbio_name_filter() -> None:
     assert not is_orbio_advertised_name("Apple TV")
     assert not is_orbio_advertised_name(None)
     assert not is_orbio_advertised_name("")
+
+
+def test_ppg_sample_round_trip() -> None:
+    packed = encode_ppg_sample(7, 231000)
+    samples = parse_ppg(packed)
+    assert samples[0].channel == 7
+    assert samples[0].value == 231000
+    negative = parse_ppg(encode_ppg_sample(1, -50))
+    assert negative[0].value == -50
+
+
+def test_parse_ppg_typical_frame() -> None:
+    payload = _fake_ppg(0)
+    assert len(payload) == PPG_TYPICAL_BYTES
+    samples = parse_ppg(payload)
+    assert len(samples) == 72
+    channels = {row.channel for row in samples}
+    assert channels == {1, 2, 3, 4, 5, 6, 7, 8}
+
+
+def test_parse_accel_xyz_little_endian() -> None:
+    payload = struct.pack("<hhh", -12, 34, 16000) + struct.pack("<hhh", 1, 2, 3)
+    samples = parse_accel(payload)
+    assert len(samples) == 2
+    assert samples[0].x == -12
+    assert samples[0].y == 34
+    assert samples[0].z == 16000
+    assert samples[1].x == 1
+
+
+def test_assembler_completes_ppg_in_one_packet() -> None:
+    payload = _fake_ppg(3)
+    header = encode_frame_header(PACKET_TYPE_PPG, timestamp=7, payload_bytes=len(payload))
+    assembler = SweepAssembler(timeout_s=3)
+    complete = assembler.push(header + payload, 0.0)
+    assert [frame.packet_type for frame in complete] == [PACKET_TYPE_PPG]
+    assert payloads(complete) == [payload]
+    assert assembler.last_byte_count_ok
+    parsed = parse_ppg(complete[0].payload)
+    assert parsed[0].channel == 1
+
+
+def test_assembler_completes_accel_in_one_packet() -> None:
+    payload = _fake_accel(1)
+    header = encode_frame_header(PACKET_TYPE_ACCEL, payload_bytes=len(payload))
+    assembler = SweepAssembler(timeout_s=3)
+    complete = assembler.push(header + payload, 0.0)
+    assert complete[0].packet_type == PACKET_TYPE_ACCEL
+    assert payloads(complete) == [payload]
+    assert len(payload) % ACCEL_BYTES_PER_SAMPLE == 0
+    assert assembler.last_byte_count_ok
+
+
+def test_ppg_header_length_is_big_endian_216() -> None:
+    payload = _fake_ppg(0)
+    assert len(payload) == 216
+    header = (
+        PACKET_MAGIC
+        + bytes((PACKET_TYPE_PPG,))
+        + (0).to_bytes(4, "little")
+        + (216).to_bytes(2, "big")
+    )
+    parsed = parse_frame_header(header)
+    assert parsed is not None
+    assert parsed.length == 216
+    assert parsed.payload_bytes == 216
+    assembler = SweepAssembler(timeout_s=3)
+    complete = assembler.push(header + payload, 0.0)
+    assert payloads(complete) == [payload]
+    assert assembler.last_byte_count_ok
+    assert assembler.packet_loss == 0

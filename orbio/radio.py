@@ -3,24 +3,32 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import struct
 import time
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
 from orbio.protocol import (
+    ACCEL_TYPICAL_SAMPLES,
     CONTROL_SERVICE_UUID,
     DEVICE_NAME_PREFIX,
     DATA_SERVICE_UUID,
     FREQ_MHZ,
     MAX_NOTIFY_BYTES,
     N_SAMPLES,
+    PACKET_TYPE_ACCEL,
+    PACKET_TYPE_PPG,
+    PPG_CHANNELS,
+    PPG_TYPICAL_SAMPLES,
     REPORT_FW_ID_UUID,
     REPORT_PARAMETERS_UUID,
     SET_PARAMETERS_UUID,
     SWEEP_BYTES,
     SWEEP_DATA_UUID,
+    encode_frame_header,
     encode_parameter_write,
+    encode_ppg_sample,
     encode_sweep_header,
     is_orbio_advertised_name,
 )
@@ -333,8 +341,11 @@ class SimulatorBackend:
         self._callback: NotifyCallback | None = None
         self._sweep_task: asyncio.Task | None = None
         self._streaming = False
+        self._stream_mode = "sweep"
         self._fw = 1
-        self._params = "10,0,0,30,600"
+        self._params = "10,30,600"
+        self._ppg_tick = 0
+        self._accel_tick = 0
 
     async def scan(self, timeout_s: float) -> list[DeviceInfo]:
         await asyncio.sleep(min(timeout_s, 0.4))
@@ -385,10 +396,24 @@ class SimulatorBackend:
 
     async def write_parameters(self, command: str) -> None:
         code = command.strip().split(",", 1)[0]
-        if code == "1":
+        if code == "10":
+            self._stream_mode = "sweep"
             self._streaming = True
-        elif code == "2":
-            self._streaming = False
+        elif code == "11":
+            if self._stream_mode == "sweep":
+                self._streaming = False
+        elif code == "20":
+            self._stream_mode = "ppg"
+            self._streaming = True
+        elif code == "21":
+            if self._stream_mode == "ppg":
+                self._streaming = False
+        elif code == "30":
+            self._stream_mode = "accel"
+            self._streaming = True
+        elif code == "31":
+            if self._stream_mode == "accel":
+                self._streaming = False
 
     async def read_fw_id(self) -> bytes:
         return bytes([self._fw])
@@ -399,10 +424,29 @@ class SimulatorBackend:
     async def _maybe_stream(self) -> None:
         try:
             while True:
-                await asyncio.sleep(1.5)
+                mode = self._stream_mode
+                pause = 0.25 if mode == "ppg" else 1.0 if mode == "accel" else 1.5
+                await asyncio.sleep(pause)
                 if self._streaming and self._callback:
-                    payload = _fake_sweep()
-                    header = encode_sweep_header(timestamp=int(time.time()) & 0xFFFFFFFF)
+                    if mode == "ppg":
+                        payload = _fake_ppg(self._ppg_tick)
+                        self._ppg_tick += 1
+                        packet_type = PACKET_TYPE_PPG
+                    elif mode == "accel":
+                        payload = _fake_accel(self._accel_tick)
+                        self._accel_tick += 1
+                        packet_type = PACKET_TYPE_ACCEL
+                    else:
+                        payload = _fake_sweep()
+                        packet_type = None
+                    if packet_type is None:
+                        header = encode_sweep_header(timestamp=int(time.time()) & 0xFFFFFFFF)
+                    else:
+                        header = encode_frame_header(
+                            packet_type,
+                            timestamp=int(time.time()) & 0xFFFFFFFF,
+                            payload_bytes=len(payload),
+                        )
                     frame = header + payload
                     for start in range(0, len(frame), MAX_NOTIFY_BYTES):
                         chunk = frame[start : start + MAX_NOTIFY_BYTES]
@@ -422,4 +466,27 @@ def _fake_sweep() -> bytes:
             q = max(-32768, min(32767, q))
             chunks.extend(struct.pack("<hh", i, q))
     assert len(chunks) == SWEEP_BYTES
+    return bytes(chunks)
+
+
+def _fake_ppg(tick: int) -> bytes:
+    dc = (42000, 88000, 125000, 56000, 98000, 162000, 231000, 235500)
+    chunks = bytearray()
+    for sample in range(PPG_TYPICAL_SAMPLES):
+        channel = (sample % PPG_CHANNELS) + 1
+        phase = (tick * PPG_TYPICAL_SAMPLES + sample) / 48.0
+        pulse = int(1800 * math.sin(phase) + 80 * ((sample % 9) - 4))
+        value = dc[channel - 1] + pulse
+        chunks.extend(encode_ppg_sample(channel, value))
+    return bytes(chunks)
+
+
+def _fake_accel(tick: int) -> bytes:
+    chunks = bytearray()
+    for sample in range(ACCEL_TYPICAL_SAMPLES):
+        phase = (tick * ACCEL_TYPICAL_SAMPLES + sample) / 12.0
+        x = int(400 * math.sin(phase))
+        y = int(280 * math.cos(phase * 1.3))
+        z = int(16000 + 220 * math.sin(phase * 0.4))
+        chunks.extend(struct.pack("<hhh", x, y, z))
     return bytes(chunks)

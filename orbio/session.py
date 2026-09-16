@@ -7,9 +7,20 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Awaitable, Callable
 
-from orbio.assembler import SweepAssembler
-from orbio.capture import SweepRecord, save_sweep
-from orbio.protocol import SWEEP_BYTES, is_orbio_advertised_name, parse_fw_id, parse_report_parameters, parse_sweep
+from orbio.assembler import AssembledFrame, SweepAssembler
+from orbio.capture import AccelRecord, PpgRecord, SweepRecord, save_accel, save_ppg, save_sweep
+from orbio.protocol import (
+    PACKET_TYPE_ACCEL,
+    PACKET_TYPE_PPG,
+    PACKET_TYPE_SWEEP,
+    SWEEP_BYTES,
+    is_orbio_advertised_name,
+    parse_accel,
+    parse_fw_id,
+    parse_ppg,
+    parse_report_parameters,
+    parse_sweep,
+)
 from orbio.radio import BleakBackend, DeviceInfo, RadioBackend, SimulatorBackend
 
 EventHandler = Callable[[str, dict[str, Any]], Awaitable[None] | None]
@@ -31,6 +42,11 @@ class SessionStatus:
     devices: list[DeviceInfo] = field(default_factory=list)
     watching: bool = False
     last_iq_points: list[dict[str, int]] = field(default_factory=list)
+    plot_mode: str = "iq"
+    ppg_count: int = 0
+    accel_count: int = 0
+    last_ppg: PpgRecord | None = None
+    last_accel: AccelRecord | None = None
     mtu: int | None = None
     connection_interval_ms: float | None = None
     connection_latency: int | None = None
@@ -48,9 +64,13 @@ class CaptureSession:
         self._watch_pass_s = 20.0
         self._watch_name = "Orbio"
         self._sweep_index = 0
+        self._ppg_index = 0
+        self._accel_index = 0
+        self._plot_lock = "iq"
         self._connecting = False
         self._expect_disconnect = False
         self._handling_remote_drop = False
+        self.assembler.allow_headerless = False
         if hasattr(self.backend, "on_disconnected"):
             self.backend.on_disconnected = self._on_remote_disconnected
         if hasattr(self.backend, "on_connection_info"):
@@ -303,9 +323,8 @@ class CaptureSession:
             "log",
             {
                 "message": (
-                    "Sweep notifications enabled. Data is sent after each sweep "
-                    "if notifications stay enabled. Click Start Sweep or wait for "
-                    "the next scheduled sweep."
+                    "Notifications enabled. Send 10 (sweep), 20 (PPG), or 30 (accel) "
+                    "from Control, or wait for the next scheduled sweep."
                 )
             },
         )
@@ -378,8 +397,26 @@ class CaptureSession:
         await self.backend.write_parameters(command)
         await self._emit("log", {"message": f"Sent command: {command}"})
         code = command.strip().split(",", 1)[0]
-        if code == "1":
-            await self._reset_iq_plot("Plot cleared for a new sweep set.")
+        if code == "10":
+            self._plot_lock = "iq"
+            self.assembler.reset()
+            await self._set_plot_mode("iq", "Plot: I/Q. Waiting for sweep frames (header type 1).", force_reset=True)
+        elif code == "20":
+            self._plot_lock = "ppg"
+            self.assembler.reset()
+            await self._set_plot_mode(
+                "ppg",
+                "Plot: PPG. Waiting for header type 2 (AA BB CC, type, timestamp, length).",
+                force_reset=True,
+            )
+        elif code == "30":
+            self._plot_lock = "accel"
+            self.assembler.reset()
+            await self._set_plot_mode(
+                "accel",
+                "Plot: accel. Waiting for header type 3 (AA BB CC, type, timestamp, length).",
+                force_reset=True,
+            )
 
     async def clear_stats(self) -> dict[str, Any]:
         self.assembler.clear_stats()
@@ -460,7 +497,12 @@ class CaptureSession:
             "buffered_bytes": self.assembler.buffered_bytes,
             "expected_bytes": self.assembler.expected_bytes,
             "sweep_count": self.status.sweep_count,
+            "ppg_count": self.status.ppg_count,
+            "accel_count": self.status.accel_count,
+            "plot_mode": self.status.plot_mode,
             "last_sweep": last,
+            "last_ppg": asdict(self.status.last_ppg) if self.status.last_ppg else None,
+            "last_accel": asdict(self.status.last_accel) if self.status.last_accel else None,
             "devices": [asdict(item) for item in self.status.devices],
             "watching": self.status.watching,
             "dropped_partials": self.assembler.dropped_partials,
@@ -507,8 +549,16 @@ class CaptureSession:
                         "packet_count": self.assembler.packet_count,
                     },
                 )
-                for sweep in complete:
-                    await self._complete_sweep(sweep)
+                for raw_type in self.assembler.unknown_headers_this_push:
+                    await self._emit(
+                        "log",
+                        {"message": f"Unknown BLE frame type {raw_type} (0x{raw_type:02X}); not sweep/PPG/accel"},
+                    )
+                opened = self.assembler.opened_packet_type
+                if opened is not None:
+                    await self._apply_plot_mode_from_type(opened)
+                for frame in complete:
+                    await self._complete_frame(frame)
             except Exception as exc:
                 await self._emit("log", {"message": f"Failed to handle BLE payload: {exc}"})
 
@@ -520,8 +570,40 @@ class CaptureSession:
                 return
         asyncio.run_coroutine_threadsafe(_handle_chunk(), loop)
 
-    async def _complete_sweep(self, payload: bytes) -> None:
-        header = self.assembler.last_sweep_header
+    def _frame_extra(self, frame: AssembledFrame) -> dict[str, Any]:
+        extra: dict[str, Any] = {
+            "fw_id": self.status.fw_id,
+            "parameters": self.status.parameters,
+            "n_bytes": len(frame.payload),
+            "frame_type": frame.packet_type,
+        }
+        header = frame.header
+        if header is not None:
+            extra["frame_timestamp"] = header.timestamp
+            extra["frame_length"] = header.length
+        return extra
+
+    async def _complete_frame(self, frame: AssembledFrame) -> None:
+        if frame.packet_type == PACKET_TYPE_PPG:
+            await self._complete_ppg(frame)
+        elif frame.packet_type == PACKET_TYPE_ACCEL:
+            await self._complete_accel(frame)
+        elif frame.packet_type == PACKET_TYPE_SWEEP:
+            await self._complete_sweep(frame)
+        else:
+            await self._emit(
+                "log",
+                {
+                    "message": (
+                        f"Ignoring unsupported frame type {frame.packet_type} "
+                        f"({len(frame.payload)} bytes)"
+                    )
+                },
+            )
+
+    async def _complete_sweep(self, frame: AssembledFrame) -> None:
+        payload = frame.payload
+        header = frame.header
         got = len(payload)
         header_length = header.length if header is not None else None
         byte_count_ok = got == SWEEP_BYTES and self.assembler.last_byte_count_ok
@@ -539,14 +621,9 @@ class CaptureSession:
 
         self._sweep_index += 1
         device = self.status.device
-        extra: dict[str, Any] = {"fw_id": self.status.fw_id, "parameters": self.status.parameters}
-        extra["n_bytes"] = got
+        extra = self._frame_extra(frame)
         extra["expected_bytes"] = SWEEP_BYTES
         extra["byte_count_ok"] = True
-        if header is not None:
-            extra["frame_type"] = header.packet_type
-            extra["frame_timestamp"] = header.timestamp
-            extra["frame_length"] = header.length
         record = save_sweep(
             payload,
             index=self._sweep_index,
@@ -578,11 +655,125 @@ class CaptureSession:
         )
         await self._emit("status", self.public_status())
 
-    async def _reset_iq_plot(self, message: str | None = None) -> None:
-        self.status.last_iq_points = []
-        await self._emit("plot_reset", {})
+    async def _complete_ppg(self, frame: AssembledFrame) -> None:
+        payload = frame.payload
+        if not self.assembler.last_byte_count_ok:
+            await self._emit(
+                "log",
+                {"message": f"Discarding PPG frame: {len(payload)} bytes did not match the header length"},
+            )
+            await self._emit("status", self.public_status())
+            return
+        try:
+            samples = parse_ppg(payload)
+        except ValueError as exc:
+            await self._emit("log", {"message": f"Discarding PPG frame: {exc}"})
+            return
+        self._ppg_index += 1
+        device = self.status.device
+        record = save_ppg(
+            payload,
+            index=self._ppg_index,
+            device_name=device.name if device else None,
+            device_address=device.address if device else None,
+            extra=self._frame_extra(frame),
+        )
+        self.status.ppg_count = self._ppg_index
+        self.status.last_ppg = record
+        self.status.buffered_bytes = self.assembler.buffered_bytes
+        points = [{"ch": row.channel, "v": row.value} for row in samples]
+        await self._emit(
+            "ppg",
+            {
+                **asdict(record),
+                "samples": points,
+            },
+        )
+        await self._emit(
+            "log",
+            {"message": f"PPG {record.index} saved ({record.n_samples} samples) -> {record.csv_path}"},
+        )
+        await self._emit("status", self.public_status())
+
+    async def _complete_accel(self, frame: AssembledFrame) -> None:
+        payload = frame.payload
+        if not self.assembler.last_byte_count_ok:
+            await self._emit(
+                "log",
+                {"message": f"Discarding accel frame: {len(payload)} bytes did not match the header length"},
+            )
+            await self._emit("status", self.public_status())
+            return
+        try:
+            samples = parse_accel(payload)
+        except ValueError as exc:
+            await self._emit("log", {"message": f"Discarding accel frame: {exc}"})
+            return
+        self._accel_index += 1
+        device = self.status.device
+        record = save_accel(
+            payload,
+            index=self._accel_index,
+            device_name=device.name if device else None,
+            device_address=device.address if device else None,
+            extra=self._frame_extra(frame),
+        )
+        self.status.accel_count = self._accel_index
+        self.status.last_accel = record
+        self.status.buffered_bytes = self.assembler.buffered_bytes
+        points = [{"x": row.x, "y": row.y, "z": row.z} for row in samples]
+        await self._emit(
+            "accel",
+            {
+                **asdict(record),
+                "samples": points,
+            },
+        )
+        await self._emit(
+            "log",
+            {"message": f"Accel {record.index} saved ({record.n_samples} XYZ samples) -> {record.csv_path}"},
+        )
+        await self._emit("status", self.public_status())
+
+    def _plot_mode_for_type(self, packet_type: int) -> str | None:
+        if packet_type == PACKET_TYPE_PPG:
+            return "ppg"
+        if packet_type == PACKET_TYPE_ACCEL:
+            return "accel"
+        if packet_type == PACKET_TYPE_SWEEP:
+            return "iq"
+        return None
+
+    async def _apply_plot_mode_from_type(self, packet_type: int) -> None:
+        mode = self._plot_mode_for_type(packet_type)
+        if mode is None:
+            return
+        if mode == "iq" and self._plot_lock in {"ppg", "accel"}:
+            return
+        if mode in {"ppg", "accel"}:
+            self._plot_lock = mode
+        labels = {"iq": "I/Q sweep", "ppg": "PPG", "accel": "accel"}
+        message = None
+        if mode != self.status.plot_mode:
+            message = f"Plot: {labels[mode]} (header type {packet_type})"
+        await self._set_plot_mode(mode, message)
+
+    async def _set_plot_mode(self, mode: str, message: str | None = None, *, force_reset: bool = False) -> None:
+        if mode == self.status.plot_mode and not force_reset:
+            if message:
+                await self._emit("log", {"message": message})
+            return
+        self.status.plot_mode = mode
+        if mode == "iq":
+            self.status.last_iq_points = []
+        await self._emit("plot_mode", {"mode": mode})
+        await self._emit("plot_reset", {"mode": mode})
+        await self._emit("status", self.public_status())
         if message:
             await self._emit("log", {"message": message})
+
+    async def _reset_iq_plot(self, message: str | None = None) -> None:
+        await self._set_plot_mode("iq", message, force_reset=True)
 
     async def _emit(self, event: str, payload: dict[str, Any]) -> None:
         for handler in list(self._handlers):

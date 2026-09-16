@@ -40,7 +40,9 @@ class CommandRequest(BaseModel):
 
 class MemorySaveRequest(BaseModel):
     slot: int = Field(ge=1, le=5)
-    points: list[dict[str, int]]
+    kind: str = "iq"
+    points: list[dict] | None = None
+    series: Any = None
     device_name: str | None = None
     device_address: str | None = None
     source: str | None = None
@@ -48,6 +50,7 @@ class MemorySaveRequest(BaseModel):
 
 class MemorySlotRequest(BaseModel):
     slot: int = Field(ge=1, le=5)
+    kind: str = "iq"
 
 
 class AppState:
@@ -120,8 +123,11 @@ async def last_sweep() -> dict[str, Any]:
 
 
 @app.get("/api/memories")
-async def memories() -> dict[str, Any]:
-    return {"memories": list_memories()}
+async def memories(kind: str = "iq") -> dict[str, Any]:
+    try:
+        return {"kind": kind, "memories": list_memories(kind)}
+    except ValueError as exc:
+        raise _http_error(exc) from exc
 
 
 @app.post("/api/memory/save")
@@ -135,6 +141,8 @@ async def memory_save(body: MemorySaveRequest) -> dict[str, Any]:
                 "device_address": body.device_address,
                 "source": body.source,
             },
+            kind=body.kind,
+            series=body.series,
         )
     except ValueError as exc:
         raise _http_error(exc) from exc
@@ -143,7 +151,7 @@ async def memory_save(body: MemorySaveRequest) -> dict[str, Any]:
 @app.post("/api/memory/recall")
 async def memory_recall(body: MemorySlotRequest) -> dict[str, Any]:
     try:
-        return load_memory(body.slot)
+        return load_memory(body.slot, body.kind)
     except (ValueError, FileNotFoundError) as exc:
         raise _http_error(exc) from exc
 
