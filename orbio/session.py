@@ -624,7 +624,8 @@ class CaptureSession:
         extra = self._frame_extra(frame)
         extra["expected_bytes"] = SWEEP_BYTES
         extra["byte_count_ok"] = True
-        record = save_sweep(
+        record = await asyncio.to_thread(
+            save_sweep,
             payload,
             index=self._sweep_index,
             device_name=device.name if device else None,
@@ -671,7 +672,8 @@ class CaptureSession:
             return
         self._ppg_index += 1
         device = self.status.device
-        record = save_ppg(
+        record = await asyncio.to_thread(
+            save_ppg,
             payload,
             index=self._ppg_index,
             device_name=device.name if device else None,
@@ -689,11 +691,7 @@ class CaptureSession:
                 "samples": points,
             },
         )
-        await self._emit(
-            "log",
-            {"message": f"PPG {record.index} saved ({record.n_samples} samples) -> {record.csv_path}"},
-        )
-        await self._emit("status", self.public_status())
+        await self._emit_stream_progress("PPG", record.index, record.n_samples, "samples")
 
     async def _complete_accel(self, frame: AssembledFrame) -> None:
         payload = frame.payload
@@ -711,7 +709,8 @@ class CaptureSession:
             return
         self._accel_index += 1
         device = self.status.device
-        record = save_accel(
+        record = await asyncio.to_thread(
+            save_accel,
             payload,
             index=self._accel_index,
             device_name=device.name if device else None,
@@ -729,11 +728,7 @@ class CaptureSession:
                 "samples": points,
             },
         )
-        await self._emit(
-            "log",
-            {"message": f"Accel {record.index} saved ({record.n_samples} XYZ samples) -> {record.csv_path}"},
-        )
-        await self._emit("status", self.public_status())
+        await self._emit_stream_progress("Accel", record.index, record.n_samples, "XYZ samples")
 
     def _plot_mode_for_type(self, packet_type: int) -> str | None:
         if packet_type == PACKET_TYPE_PPG:
@@ -774,6 +769,15 @@ class CaptureSession:
 
     async def _reset_iq_plot(self, message: str | None = None) -> None:
         await self._set_plot_mode("iq", message, force_reset=True)
+
+    async def _emit_stream_progress(self, label: str, index: int, n_samples: int, unit: str) -> None:
+        if index == 1 or index % 50 == 0:
+            await self._emit(
+                "log",
+                {"message": f"{label} frames saved: {index} (last frame {n_samples} {unit})"},
+            )
+        if index == 1 or index % 10 == 0:
+            await self._emit("status", self.public_status())
 
     async def _emit(self, event: str, payload: dict[str, Any]) -> None:
         for handler in list(self._handlers):

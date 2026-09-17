@@ -43,6 +43,9 @@ function emptyAccelSeries() {
 function log(message) {
   const time = new Date().toLocaleTimeString();
   logEl.textContent += `[${time}] ${message}\n`;
+  if (logEl.textContent.length > 80000) {
+    logEl.textContent = logEl.textContent.slice(-40000);
+  }
   logEl.scrollTop = logEl.scrollHeight;
 }
 
@@ -287,7 +290,7 @@ function appendPpgSamples(samples) {
     series.push(Number(row.v));
     if (series.length > TIME_WINDOW) series.splice(0, series.length - TIME_WINDOW);
   }
-  redrawPlot();
+  schedulePlot();
 }
 
 function appendAccelSamples(samples) {
@@ -301,7 +304,16 @@ function appendAccelSamples(samples) {
       accelSeries[key].splice(0, accelSeries[key].length - TIME_WINDOW);
     }
   }
-  redrawPlot();
+  schedulePlot();
+}
+
+let plotRaf = 0;
+function schedulePlot() {
+  if (plotRaf) return;
+  plotRaf = requestAnimationFrame(() => {
+    plotRaf = 0;
+    redrawPlot();
+  });
 }
 
 function setPlotMode(mode) {
@@ -771,8 +783,16 @@ document.querySelectorAll(".commands li").forEach((item) => {
   });
 });
 
-const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
-socket.addEventListener("message", (event) => {
+let socket = null;
+let reconnectTimer = 0;
+let reconnectAttempt = 0;
+const MAX_RECONNECTS = 20;
+
+function captureWsUrl() {
+  return `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
+}
+
+function handleCaptureMessage(event) {
   const message = JSON.parse(event.data);
   if (message.event === "log") log(message.payload.message);
   if (message.event === "status") renderStatus(message.payload);
@@ -804,14 +824,41 @@ socket.addEventListener("message", (event) => {
     setAccelMeta(message.payload);
     appendAccelSamples(message.payload.samples || []);
   }
-});
-socket.addEventListener("open", () => log("UI connected to local capture service"));
-socket.addEventListener("close", () => {
-  log("UI lost the local capture service. Restart python -m orbio.app, then refresh this page.");
-});
-socket.addEventListener("error", () => {
-  log("Capture service is not reachable. Is python -m orbio.app still running?");
-});
+}
+
+function scheduleReconnect() {
+  if (reconnectAttempt >= MAX_RECONNECTS) {
+    log("Could not reconnect to the capture service. Close this window and launch Orbio BioSensor BLE from the desktop icon.");
+    return;
+  }
+  const delay = Math.min(8000, 400 * 2 ** reconnectAttempt);
+  reconnectAttempt += 1;
+  log(`Capture service disconnected. Reconnecting (${reconnectAttempt}/${MAX_RECONNECTS})…`);
+  window.clearTimeout(reconnectTimer);
+  reconnectTimer = window.setTimeout(connectCaptureSocket, delay);
+}
+
+function connectCaptureSocket() {
+  if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+  socket = new WebSocket(captureWsUrl());
+  socket.addEventListener("message", handleCaptureMessage);
+  socket.addEventListener("open", () => {
+    reconnectAttempt = 0;
+    log("UI connected to local capture service");
+    api("/api/status").then((status) => {
+      renderStatus(status);
+      refreshMemories();
+    }).catch((error) => log(error.message));
+  });
+  socket.addEventListener("close", (event) => {
+    if (event.target !== socket) return;
+    scheduleReconnect();
+  });
+}
+
+connectCaptureSocket();
 
 api("/api/status").then((status) => {
   renderStatus(status);

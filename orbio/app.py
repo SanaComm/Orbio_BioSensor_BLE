@@ -118,13 +118,21 @@ def main(argv: list[str] | None = None) -> None:
                 port=args.port,
                 reload=False,
                 log_level="info",
+                ws_ping_interval=20.0,
+                ws_ping_timeout=20.0,
             )
             server = uvicorn.Server(config)
             thread = threading.Thread(target=_run_server, args=(server,), name="orbio-uvicorn", daemon=False)
             thread.start()
-            own_server = True
-            _wait_until_started(server)
-            print(f"Orbio capture UI: {url}")
+            try:
+                _wait_until_started(server, timeout_s=20.0)
+                own_server = True
+                print(f"Orbio capture UI: {url}")
+            except RuntimeError:
+                if _server_already_up(url):
+                    print(f"Using capture server already running at {url}")
+                else:
+                    raise
         if args.simulate:
             print("Simulator mode: fake Orbio-sim001 appears automatically")
 
