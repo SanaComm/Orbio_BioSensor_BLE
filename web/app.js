@@ -23,9 +23,11 @@ const plotFreq = document.getElementById("plot-freq");
 const sweepsShownEl = document.getElementById("sweeps-shown");
 const plotCard = document.getElementById("plot-card");
 const plotTitle = document.getElementById("plot-title");
+const iqViewBtn = document.getElementById("iq-view-btn");
 
 let lastDevice = {};
 let plotMode = "iq";
+let iqView = "iq";
 const TIME_WINDOW = 500;
 const PPG_COLORS = ["#5b8def", "#3ec6b4", "#e2b15a", "#e07a6a", "#c084fc", "#f472b6", "#4ade80", "#fb923c"];
 const ACCEL_COLORS = { x: "#fb923c", y: "#f472b6", z: "#4ade80" };
@@ -320,12 +322,32 @@ function setPlotMode(mode) {
   const next = mode === "ppg" || mode === "accel" ? mode : "iq";
   const changed = next !== plotMode;
   plotMode = next;
-  if (plotCard) plotCard.dataset.mode = plotMode;
-  if (plotTitle) {
-    plotTitle.textContent = plotMode === "ppg" ? "PPG" : plotMode === "accel" ? "Accel" : "I / Q";
-  }
-  iqPlot.classList.toggle("time-plot", plotMode !== "iq");
+  applyPlotChrome();
   if (changed) refreshMemories();
+}
+
+function setIqView(view) {
+  iqView = view === "magphase" ? "magphase" : "iq";
+  applyPlotChrome();
+  redrawPlot();
+}
+
+function toggleIqView() {
+  setIqView(iqView === "magphase" ? "iq" : "magphase");
+}
+
+function applyPlotChrome() {
+  if (plotCard) {
+    plotCard.dataset.mode = plotMode;
+    plotCard.dataset.view = plotMode === "iq" ? iqView : plotMode;
+  }
+  if (plotTitle) {
+    if (plotMode === "ppg") plotTitle.textContent = "PPG";
+    else if (plotMode === "accel") plotTitle.textContent = "Accel";
+    else plotTitle.textContent = iqView === "magphase" ? "Magnitude / Phase" : "I / Q";
+  }
+  iqPlot.classList.toggle("time-plot", plotMode !== "iq" || iqView === "magphase");
+  if (iqViewBtn) iqViewBtn.textContent = iqView === "magphase" ? "I / Q" : "Mag / Phase";
 }
 
 function redrawPlot() {
@@ -349,6 +371,10 @@ function redrawPlot() {
       ],
       "Waiting for accel…"
     );
+    return;
+  }
+  if (iqView === "magphase") {
+    drawMagPhasePlot(iqSweeps.slice(-sweepsShownLimit()));
     return;
   }
   drawIqPlot(iqHistory);
@@ -441,6 +467,152 @@ function drawStackedPlot(channels, emptyLabel) {
     ctx.textAlign = "left";
     ctx.fillText(ch.label, left + plotW + 6 * dpr, y0 + stripH / 2);
   }
+}
+
+function magPhaseSamples(points, center) {
+  const originI = center && Number.isFinite(center.i) ? center.i : 0;
+  const originQ = center && Number.isFinite(center.q) ? center.q : 0;
+  const samples = [];
+  for (const point of points || []) {
+    const freq = Number(point.f);
+    const index = Math.round((freq - 700) / 10);
+    if (!Number.isFinite(freq) || index < 0 || index >= FREQ_MHZ.length) continue;
+    const i = (Number(point.i) || 0) - originI;
+    const q = (Number(point.q) || 0) - originQ;
+    samples.push({
+      index,
+      mag: Math.hypot(i, q),
+      phase: (Math.atan2(q, i) * 180) / Math.PI,
+    });
+  }
+  return samples;
+}
+
+function sweepOverlayColor(index, total) {
+  const t = total <= 1 ? 1 : index / (total - 1);
+  return `hsla(${200 - t * 40}, 72%, ${48 + t * 14}%, ${0.28 + 0.72 * t})`;
+}
+
+function formatAxisValue(value) {
+  if (!Number.isFinite(value)) return "";
+  const abs = Math.abs(value);
+  if (abs >= 100) return String(Math.round(value));
+  if (abs >= 10) return value.toFixed(1);
+  return value.toFixed(2);
+}
+
+function drawMagPhasePlot(sweeps) {
+  const box = iqPlot.parentElement;
+  const cssW = Math.max(160, Math.floor((box && box.clientWidth) || 480));
+  const cssH = Math.max(200, Math.floor((box && box.clientHeight) || 360));
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.round(cssW * dpr);
+  const height = Math.round(cssH * dpr);
+  if (iqPlot.width !== width || iqPlot.height !== height) {
+    iqPlot.width = width;
+    iqPlot.height = height;
+  }
+  iqPlot.style.width = `${cssW}px`;
+  iqPlot.style.height = `${cssH}px`;
+  const ctx = iqCtx;
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = "#0b1117";
+  ctx.fillRect(0, 0, width, height);
+
+  const center = plotCenter((sweeps || []).flat());
+  const traces = (sweeps || [])
+    .map((sweep) => magPhaseSamples(sweep, center))
+    .filter((trace) => trace.length);
+  if (!traces.length) {
+    ctx.fillStyle = "#93a4b8";
+    ctx.font = `${Math.round(12 * dpr)}px Segoe UI, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.fillText("Waiting for I/Q…", width / 2, height / 2);
+    return;
+  }
+
+  const magValues = traces.flatMap((trace) => trace.map((sample) => sample.mag));
+  const magExtent = seriesExtent(magValues);
+  const phaseExtent = { min: -180, max: 180 };
+  const left = Math.round(52 * dpr);
+  const right = Math.round(52 * dpr);
+  const top = Math.round(6 * dpr);
+  const bottom = Math.round(22 * dpr);
+  const gap = Math.round(8 * dpr);
+  const plotW = width - left - right;
+  const stripH = Math.floor((height - top - bottom - gap) / 2);
+  const nFreq = Math.max(1, FREQ_MHZ.length - 1);
+  const toX = (index) => left + (index / nFreq) * plotW;
+  const radius = Math.max(1.1 * dpr, 1.6);
+  const radiusHi = radius * 1.8;
+  const selected = selectedFreqIndex;
+  const panels = [
+    { label: "Mag", valuesKey: "mag", extent: magExtent, y0: top },
+    { label: "Phase °", valuesKey: "phase", extent: phaseExtent, y0: top + stripH + gap },
+  ];
+
+  ctx.font = `${Math.round(10 * dpr)}px Segoe UI, sans-serif`;
+  for (const panel of panels) {
+    const { min, max } = panel.extent;
+    const span = max - min || 1;
+    const toY = (value) => panel.y0 + stripH - ((value - min) / span) * stripH;
+    ctx.fillStyle = "#101820";
+    ctx.fillRect(left, panel.y0, plotW, stripH);
+    ctx.strokeStyle = "#2a3b4d";
+    ctx.lineWidth = Math.max(1, dpr);
+    ctx.strokeRect(left + 0.5, panel.y0 + 0.5, plotW - 1, stripH - 1);
+
+    if (selected >= 0) {
+      const x = toX(selected);
+      ctx.strokeStyle = "rgba(62, 198, 180, 0.45)";
+      ctx.lineWidth = Math.max(1, dpr);
+      ctx.beginPath();
+      ctx.moveTo(x, panel.y0);
+      ctx.lineTo(x, panel.y0 + stripH);
+      ctx.stroke();
+    }
+
+    traces.forEach((trace, index) => {
+      const color = sweepOverlayColor(index, traces.length);
+      for (const sample of trace) {
+        if (selected >= 0 && sample.index === selected) continue;
+        ctx.globalAlpha = selected >= 0 ? 0.16 : 1;
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(toX(sample.index), toY(sample[panel.valuesKey]), radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    });
+    ctx.globalAlpha = 1;
+    if (selected >= 0) {
+      traces.forEach((trace) => {
+        for (const sample of trace) {
+          if (sample.index !== selected) continue;
+          ctx.fillStyle = freqColor(FREQ_MHZ[sample.index]);
+          ctx.beginPath();
+          ctx.arc(toX(sample.index), toY(sample[panel.valuesKey]), radiusHi, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      });
+    }
+
+    ctx.fillStyle = "#93a4b8";
+    ctx.textAlign = "right";
+    ctx.fillText(formatAxisValue(max), left - 4 * dpr, panel.y0 + 10 * dpr);
+    ctx.fillText(formatAxisValue(min), left - 4 * dpr, panel.y0 + stripH - 2 * dpr);
+    ctx.fillStyle = "#3ec6b4";
+    ctx.textAlign = "left";
+    ctx.fillText(panel.label, left + plotW + 6 * dpr, panel.y0 + stripH / 2);
+  }
+
+  const xAxisY = top + stripH * 2 + gap + 14 * dpr;
+  ctx.fillStyle = "#93a4b8";
+  ctx.textAlign = "left";
+  ctx.fillText("700", toX(0), xAxisY);
+  ctx.textAlign = "center";
+  ctx.fillText("890", toX((890 - 700) / 10), xAxisY);
+  ctx.textAlign = "right";
+  ctx.fillText("1080 MHz", toX(FREQ_MHZ.length - 1), xAxisY);
 }
 
 function selectedSlot() {
@@ -744,6 +916,7 @@ async function send(command) {
 pauseBtn.addEventListener("click", toggleLooking);
 disconnectBtn.addEventListener("click", disconnect);
 document.getElementById("clear-iq-btn").addEventListener("click", clearCurrentPlot);
+if (iqViewBtn) iqViewBtn.addEventListener("click", toggleIqView);
 plotCenterI.addEventListener("input", () => {
   if (syncingCenter) return;
   userSetCenterI = plotCenterI.value.trim() !== "";

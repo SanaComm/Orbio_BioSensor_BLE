@@ -501,7 +501,8 @@ button:disabled {
 }
 
 .plot-card[data-mode="ppg"] .plot-iq-only,
-.plot-card[data-mode="accel"] .plot-iq-only {
+.plot-card[data-mode="accel"] .plot-iq-only,
+.plot-card[data-view="magphase"] .plot-constellation-only {
   display: none;
 }
 
@@ -511,7 +512,8 @@ button:disabled {
 }
 
 .plot-card[data-mode="ppg"] .plot-main,
-.plot-card[data-mode="accel"] .plot-main {
+.plot-card[data-mode="accel"] .plot-main,
+.plot-card[data-view="magphase"] .plot-main {
   align-items: stretch;
 }
 

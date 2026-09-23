@@ -67,7 +67,8 @@ The lower-right window is **one mode at a time**. Send `10` / `20` / `30` to sta
 
 - **I** is the horizontal axis, **Q** is the vertical axis. Color runs from 700 MHz (blue) to 1080 MHz (yellow).
 - The crosshair is at **Center I** / **Center Q**. Those fill from the data until you type values. Both axes share the same autoscale around that center.
-- Hover the plot or **Freq** and use the mouse wheel to highlight one frequency (700–1080 MHz, 10 MHz steps). Click **Freq** for All.
+- Hover the I/Q or Mag / Phase plot, or **Freq**, and use the mouse wheel to highlight one frequency (700–1080 MHz, 10 MHz steps). Click **Freq** for All.
+- **Mag / Phase** switches to amplitude and phase versus frequency, using the same **Center I** / **Center Q** as the constellation (not 0,0). Each I/Q sample is drawn as a point (no connecting lines): magnitude = √((I−centerI)²+(Q−centerQ)²) and phase = atan2(Q−centerQ, I−centerI) in degrees on a fixed ±180° axis. The same **# Sweeps Shown** overlay applies. **I / Q** toggles back to the constellation.
 
 **PPG.** Eight stacked traces (channels 1–8), each with its own Y autoscale. The X axis is a 500-sample scrolling window.
 
