@@ -488,9 +488,8 @@ function magPhaseSamples(points, center) {
   return samples;
 }
 
-function sweepOverlayColor(index, total) {
-  const t = total <= 1 ? 1 : index / (total - 1);
-  return `hsla(${200 - t * 40}, 72%, ${48 + t * 14}%, ${0.28 + 0.72 * t})`;
+function phaseSignColor(phase) {
+  return phase < 0 ? "#fb923c" : "#3ec6b4";
 }
 
 function formatAxisValue(value) {
@@ -572,12 +571,11 @@ function drawMagPhasePlot(sweeps) {
       ctx.stroke();
     }
 
-    traces.forEach((trace, index) => {
-      const color = sweepOverlayColor(index, traces.length);
+    traces.forEach((trace) => {
       for (const sample of trace) {
         if (selected >= 0 && sample.index === selected) continue;
         ctx.globalAlpha = selected >= 0 ? 0.16 : 1;
-        ctx.fillStyle = color;
+        ctx.fillStyle = phaseSignColor(sample.phase);
         ctx.beginPath();
         ctx.arc(toX(sample.index), toY(sample[panel.valuesKey]), radius, 0, Math.PI * 2);
         ctx.fill();
@@ -588,7 +586,7 @@ function drawMagPhasePlot(sweeps) {
       traces.forEach((trace) => {
         for (const sample of trace) {
           if (sample.index !== selected) continue;
-          ctx.fillStyle = freqColor(FREQ_MHZ[sample.index]);
+          ctx.fillStyle = phaseSignColor(sample.phase);
           ctx.beginPath();
           ctx.arc(toX(sample.index), toY(sample[panel.valuesKey]), radiusHi, 0, Math.PI * 2);
           ctx.fill();
@@ -596,13 +594,29 @@ function drawMagPhasePlot(sweeps) {
       });
     }
 
-    ctx.fillStyle = "#93a4b8";
     ctx.textAlign = "right";
-    ctx.fillText(formatAxisValue(max), left - 4 * dpr, panel.y0 + 10 * dpr);
-    ctx.fillText(formatAxisValue(min), left - 4 * dpr, panel.y0 + stripH - 2 * dpr);
-    ctx.fillStyle = "#3ec6b4";
+    if (panel.valuesKey === "phase") {
+      ctx.fillStyle = "#3ec6b4";
+      ctx.fillText(formatAxisValue(max), left - 4 * dpr, panel.y0 + 10 * dpr);
+      ctx.fillStyle = "#fb923c";
+      ctx.fillText(formatAxisValue(min), left - 4 * dpr, panel.y0 + stripH - 2 * dpr);
+    } else {
+      ctx.fillStyle = "#93a4b8";
+      ctx.fillText(formatAxisValue(max), left - 4 * dpr, panel.y0 + 10 * dpr);
+      ctx.fillText(formatAxisValue(min), left - 4 * dpr, panel.y0 + stripH - 2 * dpr);
+    }
     ctx.textAlign = "left";
-    ctx.fillText(panel.label, left + plotW + 6 * dpr, panel.y0 + stripH / 2);
+    if (panel.valuesKey === "phase") {
+      ctx.fillStyle = "#3ec6b4";
+      ctx.fillText("+", left + plotW + 6 * dpr, panel.y0 + 12 * dpr);
+      ctx.fillStyle = "#93a4b8";
+      ctx.fillText("Phase °", left + plotW + 6 * dpr, panel.y0 + stripH / 2);
+      ctx.fillStyle = "#fb923c";
+      ctx.fillText("−", left + plotW + 6 * dpr, panel.y0 + stripH - 4 * dpr);
+    } else {
+      ctx.fillStyle = "#3ec6b4";
+      ctx.fillText(panel.label, left + plotW + 6 * dpr, panel.y0 + stripH / 2);
+    }
   }
 
   const xAxisY = top + stripH * 2 + gap + 14 * dpr;
@@ -930,6 +944,19 @@ plotCenterQ.addEventListener("input", () => {
 plotCenterI.addEventListener("change", () => redrawPlot());
 plotCenterQ.addEventListener("change", () => redrawPlot());
 sweepsShownEl.addEventListener("change", rebuildIqHistory);
+sweepsShownEl.addEventListener("input", rebuildIqHistory);
+sweepsShownEl.addEventListener(
+  "wheel",
+  (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const current = sweepsShownLimit();
+    const next = current + (event.deltaY > 0 ? -1 : 1);
+    sweepsShownEl.value = String(Math.max(1, Math.min(SWEEP_BUFFER_MAX, next)));
+    rebuildIqHistory();
+  },
+  { passive: false }
+);
 plotFreq.addEventListener("wheel", onFreqWheel, { passive: false });
 plotFreq.addEventListener("click", () => setSelectedFreq(-1));
 iqPlot.parentElement.addEventListener("wheel", onFreqWheel, { passive: false });
