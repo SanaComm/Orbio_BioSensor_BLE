@@ -420,8 +420,17 @@ class CaptureSession:
 
     async def clear_stats(self) -> dict[str, Any]:
         self.assembler.clear_stats()
+        self._sweep_index = 0
+        self._ppg_index = 0
+        self._accel_index = 0
+        self.status.sweep_count = 0
+        self.status.ppg_count = 0
+        self.status.accel_count = 0
+        self.status.last_sweep = None
+        self.status.last_ppg = None
+        self.status.last_accel = None
         status = self.public_status()
-        await self._emit("log", {"message": "Packet loss stats cleared"})
+        await self._emit("log", {"message": "Stream stats cleared"})
         await self._emit("packet_loss", {"count": 0, "total": 0})
         await self._emit("status", status)
         return status

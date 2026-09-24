@@ -20,6 +20,8 @@ const clearStatsBtn = document.getElementById("clear-stats-btn");
 const plotCenterI = document.getElementById("plot-center-i");
 const plotCenterQ = document.getElementById("plot-center-q");
 const plotFreq = document.getElementById("plot-freq");
+const seMagEl = document.getElementById("se-mag");
+const sePhaseEl = document.getElementById("se-phase");
 const sweepsShownEl = document.getElementById("sweeps-shown");
 const plotCard = document.getElementById("plot-card");
 const plotTitle = document.getElementById("plot-title");
@@ -189,6 +191,7 @@ function renderStatus(status) {
   if (status.plot_mode === "ppg" && status.last_ppg) setPpgMeta(status.last_ppg);
   else if (status.plot_mode === "accel" && status.last_accel) setAccelMeta(status.last_accel);
   else if (status.last_sweep) setSweepMeta(status.last_sweep);
+  else sweepMeta.innerHTML = "";
 
   if (status.connected) deviceList.innerHTML = "";
   else if (status.devices) renderDevices(status.devices, status.connected, watching);
@@ -208,6 +211,28 @@ let selectedFreqIndex = -1;
 
 function selectedFreqMhz() {
   return selectedFreqIndex < 0 ? null : FREQ_MHZ[selectedFreqIndex];
+}
+
+function formatSEReadout(value, digits) {
+  if (value == null || !Number.isFinite(value)) return "—";
+  if (digits == null) {
+    const abs = Math.abs(value);
+    if (abs >= 100) return String(Math.round(value));
+    return value.toFixed(1);
+  }
+  return value.toFixed(digits);
+}
+
+function updateSEReadout(extracted) {
+  if (!seMagEl || !sePhaseEl) return;
+  if (iqView !== "se" || selectedFreqIndex < 0 || !extracted) {
+    seMagEl.value = "—";
+    sePhaseEl.value = "—";
+    return;
+  }
+  seMagEl.value = formatSEReadout(extracted.sMag[selectedFreqIndex]);
+  const phase = extracted.sPhase[selectedFreqIndex];
+  sePhaseEl.value = phase == null || !Number.isFinite(phase) ? "—" : `${formatSEReadout(phase, 1)}°`;
 }
 
 function syncFreqDisplay() {
@@ -327,13 +352,16 @@ function setPlotMode(mode) {
 }
 
 function setIqView(view) {
-  iqView = view === "magphase" ? "magphase" : "iq";
+  if (view === "magphase" || view === "se") iqView = view;
+  else iqView = "iq";
   applyPlotChrome();
   redrawPlot();
 }
 
 function toggleIqView() {
-  setIqView(iqView === "magphase" ? "iq" : "magphase");
+  if (iqView === "iq") setIqView("magphase");
+  else if (iqView === "magphase") setIqView("se");
+  else setIqView("iq");
 }
 
 function applyPlotChrome() {
@@ -344,10 +372,17 @@ function applyPlotChrome() {
   if (plotTitle) {
     if (plotMode === "ppg") plotTitle.textContent = "PPG";
     else if (plotMode === "accel") plotTitle.textContent = "Accel";
-    else plotTitle.textContent = iqView === "magphase" ? "Magnitude / Phase" : "I / Q";
+    else if (iqView === "magphase") plotTitle.textContent = "Magnitude / Phase";
+    else if (iqView === "se") plotTitle.textContent = "S / E";
+    else plotTitle.textContent = "I / Q";
   }
-  iqPlot.classList.toggle("time-plot", plotMode !== "iq" || iqView === "magphase");
-  if (iqViewBtn) iqViewBtn.textContent = iqView === "magphase" ? "I / Q" : "Mag / Phase";
+  iqPlot.classList.toggle("time-plot", plotMode !== "iq" || iqView !== "iq");
+  if (iqViewBtn) {
+    if (iqView === "iq") iqViewBtn.textContent = "Mag / Phase";
+    else if (iqView === "magphase") iqViewBtn.textContent = "S / E";
+    else iqViewBtn.textContent = "I / Q";
+  }
+  if (iqView !== "se") updateSEReadout(null);
 }
 
 function redrawPlot() {
@@ -375,6 +410,10 @@ function redrawPlot() {
   }
   if (iqView === "magphase") {
     drawMagPhasePlot(iqSweeps.slice(-sweepsShownLimit()));
+    return;
+  }
+  if (iqView === "se") {
+    drawSEPlot(iqSweeps.slice(-sweepsShownLimit()));
     return;
   }
   drawIqPlot(iqHistory);
@@ -629,6 +668,251 @@ function drawMagPhasePlot(sweeps) {
   ctx.fillText("1080 MHz", toX(FREQ_MHZ.length - 1), xAxisY);
 }
 
+function principalAxis(samples) {
+  const n = samples.length;
+  if (n < 2) return null;
+  let cxx = 0;
+  let cyy = 0;
+  let cxy = 0;
+  for (const sample of samples) {
+    cxx += sample.di * sample.di;
+    cyy += sample.dq * sample.dq;
+    cxy += sample.di * sample.dq;
+  }
+  cxx /= n;
+  cyy /= n;
+  cxy /= n;
+  const lambda = (cxx + cyy) / 2 + Math.hypot((cxx - cyy) / 2, cxy);
+  let vx;
+  let vy;
+  if (Math.abs(cxy) > 1e-12) {
+    vx = cxy;
+    vy = lambda - cxx;
+  } else if (cxx >= cyy) {
+    vx = 1;
+    vy = 0;
+  } else {
+    vx = 0;
+    vy = 1;
+  }
+  const norm = Math.hypot(vx, vy) || 1;
+  return { vx: vx / norm, vy: vy / norm };
+}
+
+function groupMean(samples) {
+  let i = 0;
+  let q = 0;
+  for (const sample of samples) {
+    i += sample.i;
+    q += sample.q;
+  }
+  const n = samples.length || 1;
+  return { i: i / n, q: q / n };
+}
+
+function extractSE(sweeps, center) {
+  const originI = center && Number.isFinite(center.i) ? center.i : 0;
+  const originQ = center && Number.isFinite(center.q) ? center.q : 0;
+  const buckets = FREQ_MHZ.map(() => []);
+  for (const sweep of sweeps || []) {
+    for (const point of sweep || []) {
+      const freq = Number(point.f);
+      const index = Math.round((freq - 700) / 10);
+      if (!Number.isFinite(freq) || index < 0 || index >= FREQ_MHZ.length) continue;
+      const i = Number(point.i) || 0;
+      const q = Number(point.q) || 0;
+      buckets[index].push({ i, q, di: i - originI, dq: q - originQ });
+    }
+  }
+  const sMag = [];
+  const sPhase = [];
+  const eMag = [];
+  const ePhase = [];
+  for (const samples of buckets) {
+    const empty = () => {
+      sMag.push(null);
+      sPhase.push(null);
+      eMag.push(null);
+      ePhase.push(null);
+    };
+    if (samples.length < 8) {
+      empty();
+      continue;
+    }
+    const axis = principalAxis(samples);
+    if (!axis) {
+      empty();
+      continue;
+    }
+    const pos = [];
+    const neg = [];
+    for (const sample of samples) {
+      if (sample.di * axis.vx + sample.dq * axis.vy >= 0) pos.push(sample);
+      else neg.push(sample);
+    }
+    const minCount = Math.max(4, Math.ceil(samples.length * 0.12));
+    if (pos.length < minCount || neg.length < minCount) {
+      empty();
+      continue;
+    }
+    const zp = groupMean(pos);
+    const zn = groupMean(neg);
+    const cpI = zp.i - originI;
+    const cpQ = zp.q - originQ;
+    const cnI = zn.i - originI;
+    const cnQ = zn.q - originQ;
+    if (cpI * cnI + cpQ * cnQ >= 0) {
+      empty();
+      continue;
+    }
+    let sI = (zp.i - zn.i) / 2;
+    let sQ = (zp.q - zn.q) / 2;
+    const eI = (zp.i + zn.i) / 2;
+    const eQ = (zp.q + zn.q) / 2;
+    let sDeg = (Math.atan2(sQ, sI) * 180) / Math.PI;
+    if (sDeg < 0) {
+      sI = -sI;
+      sQ = -sQ;
+      sDeg += 180;
+    }
+    sMag.push(Math.hypot(sI, sQ));
+    sPhase.push(sDeg);
+    eMag.push(Math.hypot(eI, eQ));
+    ePhase.push((Math.atan2(eQ, eI) * 180) / Math.PI);
+  }
+  return { sMag, sPhase, eMag, ePhase };
+}
+
+function drawConnectedSeries(ctx, values, toX, toY) {
+  let drawing = false;
+  ctx.beginPath();
+  values.forEach((value, index) => {
+    if (value == null || !Number.isFinite(value)) {
+      drawing = false;
+      return;
+    }
+    const x = toX(index);
+    const y = toY(value);
+    if (!drawing) {
+      ctx.moveTo(x, y);
+      drawing = true;
+    } else {
+      ctx.lineTo(x, y);
+    }
+  });
+  ctx.stroke();
+}
+
+function drawSEPlot(sweeps) {
+  const box = iqPlot.parentElement;
+  const cssW = Math.max(160, Math.floor((box && box.clientWidth) || 480));
+  const cssH = Math.max(200, Math.floor((box && box.clientHeight) || 360));
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.round(cssW * dpr);
+  const height = Math.round(cssH * dpr);
+  if (iqPlot.width !== width || iqPlot.height !== height) {
+    iqPlot.width = width;
+    iqPlot.height = height;
+  }
+  iqPlot.style.width = `${cssW}px`;
+  iqPlot.style.height = `${cssH}px`;
+  const ctx = iqCtx;
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = "#0b1117";
+  ctx.fillRect(0, 0, width, height);
+
+  const center = plotCenter((sweeps || []).flat());
+  const extracted = extractSE(sweeps, center);
+  const hasSE = extracted.sMag.some((value) => value != null);
+  if (!hasSE) {
+    updateSEReadout(null);
+    ctx.fillStyle = "#93a4b8";
+    ctx.font = `${Math.round(12 * dpr)}px Segoe UI, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.fillText("Need two opposite I/Q clusters at each frequency. Overlay more sweeps.", width / 2, height / 2);
+    return;
+  }
+
+  updateSEReadout(extracted);
+
+  const magS = seriesExtent(extracted.sMag.filter((value) => value != null));
+  const magE = seriesExtent(extracted.eMag.filter((value) => value != null));
+  const phaseSExtent = { min: 0, max: 180 };
+  const phaseEExtent = { min: -180, max: 180 };
+  const left = Math.round(52 * dpr);
+  const right = Math.round(44 * dpr);
+  const top = Math.round(6 * dpr);
+  const bottom = Math.round(22 * dpr);
+  const gap = Math.round(5 * dpr);
+  const nPanels = 4;
+  const plotW = width - left - right;
+  const stripH = Math.floor((height - top - bottom - gap * (nPanels - 1)) / nPanels);
+  const nFreq = Math.max(1, FREQ_MHZ.length - 1);
+  const toX = (index) => left + (index / nFreq) * plotW;
+  const radius = Math.max(1.2 * dpr, 1.8);
+  const radiusHi = radius * 1.8;
+  const selected = selectedFreqIndex;
+  const panels = [
+    { label: "|S|", values: extracted.sMag, extent: magS, color: "#5b8def", phase: false },
+    { label: "∠S", values: extracted.sPhase, extent: phaseSExtent, color: "#5b8def", phase: true },
+    { label: "|E|", values: extracted.eMag, extent: magE, color: "#e2b15a", phase: false },
+    { label: "∠E", values: extracted.ePhase, extent: phaseEExtent, color: "#e2b15a", phase: true },
+  ];
+
+  ctx.font = `${Math.round(10 * dpr)}px Segoe UI, sans-serif`;
+  panels.forEach((panel, panelIndex) => {
+    const y0 = top + panelIndex * (stripH + gap);
+    const { min, max } = panel.extent;
+    const span = max - min || 1;
+    const toY = (value) => y0 + stripH - ((value - min) / span) * stripH;
+    ctx.fillStyle = "#101820";
+    ctx.fillRect(left, y0, plotW, stripH);
+    ctx.strokeStyle = "#2a3b4d";
+    ctx.lineWidth = Math.max(1, dpr);
+    ctx.strokeRect(left + 0.5, y0 + 0.5, plotW - 1, stripH - 1);
+
+    if (selected >= 0) {
+      ctx.strokeStyle = "rgba(62, 198, 180, 0.45)";
+      ctx.beginPath();
+      ctx.moveTo(toX(selected), y0);
+      ctx.lineTo(toX(selected), y0 + stripH);
+      ctx.stroke();
+    }
+
+    ctx.strokeStyle = panel.color;
+    ctx.lineWidth = Math.max(1.4, 1.4 * dpr);
+    drawConnectedSeries(ctx, panel.values, toX, toY);
+
+    panel.values.forEach((value, index) => {
+      if (value == null || !Number.isFinite(value)) return;
+      const active = selected < 0 || index === selected;
+      ctx.globalAlpha = selected >= 0 && !active ? 0.2 : 1;
+      ctx.fillStyle = panel.color;
+      ctx.beginPath();
+      ctx.arc(toX(index), toY(value), active && selected >= 0 ? radiusHi : radius, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    ctx.globalAlpha = 1;
+
+    ctx.fillStyle = "#93a4b8";
+    ctx.textAlign = "right";
+    ctx.fillText(formatAxisValue(max), left - 4 * dpr, y0 + 10 * dpr);
+    ctx.fillText(formatAxisValue(min), left - 4 * dpr, y0 + stripH - 2 * dpr);
+    ctx.fillStyle = panel.color;
+    ctx.textAlign = "left";
+    ctx.fillText(panel.label, left + plotW + 6 * dpr, y0 + stripH / 2);
+  });
+
+  const xAxisY = top + nPanels * stripH + (nPanels - 1) * gap + 14 * dpr;
+  ctx.fillStyle = "#93a4b8";
+  ctx.textAlign = "left";
+  ctx.fillText("700", toX(0), xAxisY);
+  ctx.textAlign = "center";
+  ctx.fillText("890", toX((890 - 700) / 10), xAxisY);
+  ctx.textAlign = "right";
+  ctx.fillText("1080 MHz", toX(FREQ_MHZ.length - 1), xAxisY);
+}
+
 function selectedSlot() {
   return Number(memorySlot.value) || 1;
 }
@@ -737,10 +1021,17 @@ async function recallMemory() {
   }
 }
 
+function clearStreamCard() {
+  meterFill.style.width = "0%";
+  meterLabel.textContent = "0 / 4992 bytes";
+  setPacketLoss(0, 0);
+  sweepMeta.innerHTML = "";
+}
+
 async function clearStats() {
   try {
-    const status = await api("/api/stats/clear", {});
-    setPacketLoss(status.packet_loss || 0, status.packet_count || 0);
+    await api("/api/stats/clear", {});
+    clearStreamCard();
   } catch (error) {
     log(`Clear stats failed: ${error.message}`);
   }
@@ -959,6 +1250,8 @@ sweepsShownEl.addEventListener(
 );
 plotFreq.addEventListener("wheel", onFreqWheel, { passive: false });
 plotFreq.addEventListener("click", () => setSelectedFreq(-1));
+if (seMagEl) seMagEl.addEventListener("wheel", onFreqWheel, { passive: false });
+if (sePhaseEl) sePhaseEl.addEventListener("wheel", onFreqWheel, { passive: false });
 iqPlot.parentElement.addEventListener("wheel", onFreqWheel, { passive: false });
 clearStatsBtn.addEventListener("click", clearStats);
 clearDataBtn.addEventListener("click", clearStoredData);

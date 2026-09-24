@@ -120,7 +120,10 @@ h2 {
 
 .plot-side-right {
   align-items: stretch;
+  width: 10.5rem;
   min-width: 10.5rem;
+  max-width: 10.5rem;
+  flex-shrink: 0;
 }
 
 .plot-main {
@@ -131,9 +134,18 @@ h2 {
   align-items: center;
 }
 
+.plot-freq-row {
+  display: flex;
+  flex-shrink: 0;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 2px;
+}
+
 .plot-freq-field {
   flex-shrink: 0;
-  margin-bottom: 2px;
+  margin-bottom: 0;
 }
 
 .plot-field {
@@ -203,6 +215,9 @@ h2 {
 .plot-side-right select,
 #memory-slot {
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   padding-left: 28px;
   padding-right: 28px;
   text-align: center;
@@ -502,8 +517,17 @@ button:disabled {
 
 .plot-card[data-mode="ppg"] .plot-iq-only,
 .plot-card[data-mode="accel"] .plot-iq-only,
-.plot-card[data-view="magphase"] .plot-constellation-only {
+.plot-card[data-view="magphase"] .plot-constellation-only,
+.plot-card[data-view="se"] .plot-constellation-only {
   display: none;
+}
+
+.plot-se-only {
+  display: none;
+}
+
+.plot-card[data-view="se"] .plot-se-only {
+  display: flex;
 }
 
 .plot-card[data-mode="ppg"] .plot-stage,
@@ -513,7 +537,8 @@ button:disabled {
 
 .plot-card[data-mode="ppg"] .plot-main,
 .plot-card[data-mode="accel"] .plot-main,
-.plot-card[data-view="magphase"] .plot-main {
+.plot-card[data-view="magphase"] .plot-main,
+.plot-card[data-view="se"] .plot-main {
   align-items: stretch;
 }
 

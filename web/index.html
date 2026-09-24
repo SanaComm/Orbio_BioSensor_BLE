@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Orbio BioSensor BLE</title>
-    <link rel="stylesheet" href="/static/styles.css?v=33" />
+    <link rel="stylesheet" href="/static/styles.css?v=36" />
   </head>
   <body>
     <header class="top">
@@ -88,10 +88,20 @@
             </label>
           </div>
           <div class="plot-main">
+            <div class="plot-freq-row">
             <label class="plot-field plot-freq-field plot-iq-only">
               <span>Freq</span>
               <input id="plot-freq" type="text" readonly value="All" title="Scroll to step frequency. Click for All." />
             </label>
+            <label class="plot-field plot-freq-field plot-se-only">
+              <span>|S|</span>
+              <input id="se-mag" type="text" readonly value="—" title="S magnitude at the selected frequency" />
+            </label>
+            <label class="plot-field plot-freq-field plot-se-only">
+              <span>∠S</span>
+              <input id="se-phase" type="text" readonly value="—" title="S phase at the selected frequency" />
+            </label>
+            </div>
             <div class="plot-wrap">
               <canvas id="iq-plot" width="480" height="480"></canvas>
             </div>
@@ -117,6 +127,6 @@
       </section>
     </main>
 
-    <script src="/static/app.js?v=46"></script>
+    <script src="/static/app.js?v=51"></script>
   </body>
 </html>
