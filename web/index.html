@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Orbio BioSensor BLE</title>
-    <link rel="stylesheet" href="/static/styles.css?v=36" />
+    <link rel="stylesheet" href="/static/styles.css?v=38" />
   </head>
   <body>
     <header class="top">
@@ -122,11 +122,13 @@
             <select id="memory-slot" aria-label="Memory slot"></select>
             <button id="save-mem-btn" type="button">Save</button>
             <button id="recall-mem-btn" type="button">Recall</button>
+            <button id="se-cal-btn" class="plot-se-only" type="button" title="Subtract the selected I/Q memory (thru calibration) from live S/E">Data − Mem</button>
+            <button id="se-dbfs-btn" class="plot-se-only" type="button" title="Plot |S| and |E| as dBFS, full scale = 32768">dBFS</button>
           </div>
         </div>
       </section>
     </main>
 
-    <script src="/static/app.js?v=51"></script>
+    <script src="/static/app.js?v=53"></script>
   </body>
 </html>

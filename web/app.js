@@ -26,10 +26,18 @@ const sweepsShownEl = document.getElementById("sweeps-shown");
 const plotCard = document.getElementById("plot-card");
 const plotTitle = document.getElementById("plot-title");
 const iqViewBtn = document.getElementById("iq-view-btn");
+const seCalBtn = document.getElementById("se-cal-btn");
+const seDbfsBtn = document.getElementById("se-dbfs-btn");
+
+const SE_FULL_SCALE = 32768;
 
 let lastDevice = {};
 let plotMode = "iq";
 let iqView = "iq";
+let seCalEnabled = false;
+let seCalSlot = null;
+let seCalPoints = null;
+let seDbfsEnabled = false;
 const TIME_WINDOW = 500;
 const PPG_COLORS = ["#5b8def", "#3ec6b4", "#e2b15a", "#e07a6a", "#c084fc", "#f472b6", "#4ade80", "#fb923c"];
 const ACCEL_COLORS = { x: "#fb923c", y: "#f472b6", z: "#4ade80" };
@@ -223,6 +231,16 @@ function formatSEReadout(value, digits) {
   return value.toFixed(digits);
 }
 
+function magToDbfs(mag) {
+  if (mag == null || !Number.isFinite(mag) || mag <= 0) return null;
+  return 20 * Math.log10(mag / SE_FULL_SCALE);
+}
+
+function mapMagSeries(values) {
+  if (!seDbfsEnabled) return values;
+  return (values || []).map(magToDbfs);
+}
+
 function updateSEReadout(extracted) {
   if (!seMagEl || !sePhaseEl) return;
   if (iqView !== "se" || selectedFreqIndex < 0 || !extracted) {
@@ -230,7 +248,13 @@ function updateSEReadout(extracted) {
     sePhaseEl.value = "—";
     return;
   }
-  seMagEl.value = formatSEReadout(extracted.sMag[selectedFreqIndex]);
+  const mag = extracted.sMag[selectedFreqIndex];
+  if (seDbfsEnabled) {
+    const db = magToDbfs(mag);
+    seMagEl.value = db == null ? "—" : `${db.toFixed(1)} dBFS`;
+  } else {
+    seMagEl.value = formatSEReadout(mag);
+  }
   const phase = extracted.sPhase[selectedFreqIndex];
   sePhaseEl.value = phase == null || !Number.isFinite(phase) ? "—" : `${formatSEReadout(phase, 1)}°`;
 }
@@ -373,7 +397,7 @@ function applyPlotChrome() {
     if (plotMode === "ppg") plotTitle.textContent = "PPG";
     else if (plotMode === "accel") plotTitle.textContent = "Accel";
     else if (iqView === "magphase") plotTitle.textContent = "Magnitude / Phase";
-    else if (iqView === "se") plotTitle.textContent = "S / E";
+    else if (iqView === "se") plotTitle.textContent = seCalEnabled ? "S / E − Mem" : "S / E";
     else plotTitle.textContent = "I / Q";
   }
   iqPlot.classList.toggle("time-plot", plotMode !== "iq" || iqView !== "iq");
@@ -382,6 +406,8 @@ function applyPlotChrome() {
     else if (iqView === "magphase") iqViewBtn.textContent = "S / E";
     else iqViewBtn.textContent = "I / Q";
   }
+  if (seCalBtn) seCalBtn.classList.toggle("active", Boolean(seCalEnabled));
+  if (seDbfsBtn) seDbfsBtn.classList.toggle("active", Boolean(seDbfsEnabled));
   if (iqView !== "se") updateSEReadout(null);
 }
 
@@ -724,16 +750,16 @@ function extractSE(sweeps, center) {
       buckets[index].push({ i, q, di: i - originI, dq: q - originQ });
     }
   }
-  const sMag = [];
-  const sPhase = [];
-  const eMag = [];
-  const ePhase = [];
+  const sI = [];
+  const sQ = [];
+  const eI = [];
+  const eQ = [];
   for (const samples of buckets) {
     const empty = () => {
-      sMag.push(null);
-      sPhase.push(null);
-      eMag.push(null);
-      ePhase.push(null);
+      sI.push(null);
+      sQ.push(null);
+      eI.push(null);
+      eQ.push(null);
     };
     if (samples.length < 8) {
       empty();
@@ -765,22 +791,121 @@ function extractSE(sweeps, center) {
       empty();
       continue;
     }
-    let sI = (zp.i - zn.i) / 2;
-    let sQ = (zp.q - zn.q) / 2;
-    const eI = (zp.i + zn.i) / 2;
-    const eQ = (zp.q + zn.q) / 2;
-    let sDeg = (Math.atan2(sQ, sI) * 180) / Math.PI;
+    sI.push((zp.i - zn.i) / 2);
+    sQ.push((zp.q - zn.q) / 2);
+    eI.push((zp.i + zn.i) / 2);
+    eQ.push((zp.q + zn.q) / 2);
+  }
+  return { sI, sQ, eI, eQ };
+}
+
+function seToPlot(se) {
+  const sMag = [];
+  const sPhase = [];
+  const eMag = [];
+  const ePhase = [];
+  const n = (se && se.sI && se.sI.length) || 0;
+  for (let i = 0; i < n; i += 1) {
+    const rawSI = se.sI[i];
+    const rawSQ = se.sQ[i];
+    const rawEI = se.eI[i];
+    const rawEQ = se.eQ[i];
+    if (rawSI == null || rawSQ == null || !Number.isFinite(rawSI) || !Number.isFinite(rawSQ)) {
+      sMag.push(null);
+      sPhase.push(null);
+      eMag.push(null);
+      ePhase.push(null);
+      continue;
+    }
+    let ii = rawSI;
+    let qq = rawSQ;
+    let sDeg = (Math.atan2(qq, ii) * 180) / Math.PI;
     if (sDeg < 0) {
-      sI = -sI;
-      sQ = -sQ;
+      ii = -ii;
+      qq = -qq;
       sDeg += 180;
     }
-    sMag.push(Math.hypot(sI, sQ));
+    sMag.push(Math.hypot(ii, qq));
     sPhase.push(sDeg);
-    eMag.push(Math.hypot(eI, eQ));
-    ePhase.push((Math.atan2(eQ, eI) * 180) / Math.PI);
+    if (rawEI == null || rawEQ == null || !Number.isFinite(rawEI) || !Number.isFinite(rawEQ)) {
+      eMag.push(null);
+      ePhase.push(null);
+    } else {
+      eMag.push(Math.hypot(rawEI, rawEQ));
+      ePhase.push((Math.atan2(rawEQ, rawEI) * 180) / Math.PI);
+    }
   }
   return { sMag, sPhase, eMag, ePhase };
+}
+
+function seHasValues(plot) {
+  return Boolean(plot && plot.sMag && plot.sMag.some((value) => value != null));
+}
+
+function autoCenter(points) {
+  const rows = points || [];
+  if (!rows.length) return { i: 0, q: 0 };
+  return {
+    i: median(rows.map((point) => Number(point.i) || 0)),
+    q: median(rows.map((point) => Number(point.q) || 0)),
+  };
+}
+
+function subtractSE(data, mem) {
+  const sI = [];
+  const sQ = [];
+  const eI = [];
+  const eQ = [];
+  const n = FREQ_MHZ.length;
+  for (let i = 0; i < n; i += 1) {
+    const dI = data.sI[i];
+    const dQ = data.sQ[i];
+    let mI = mem.sI[i];
+    let mQ = mem.sQ[i];
+    const deI = data.eI[i];
+    const deQ = data.eQ[i];
+    const meI = mem.eI[i];
+    const meQ = mem.eQ[i];
+    if (
+      dI == null ||
+      dQ == null ||
+      mI == null ||
+      mQ == null ||
+      !Number.isFinite(dI) ||
+      !Number.isFinite(dQ) ||
+      !Number.isFinite(mI) ||
+      !Number.isFinite(mQ)
+    ) {
+      sI.push(null);
+      sQ.push(null);
+      eI.push(null);
+      eQ.push(null);
+      continue;
+    }
+    if (dI * mI + dQ * mQ < 0) {
+      mI = -mI;
+      mQ = -mQ;
+    }
+    sI.push(dI - mI);
+    sQ.push(dQ - mQ);
+    if (
+      deI == null ||
+      deQ == null ||
+      meI == null ||
+      meQ == null ||
+      !Number.isFinite(deI) ||
+      !Number.isFinite(deQ) ||
+      !Number.isFinite(meI) ||
+      !Number.isFinite(meQ)
+    ) {
+      eI.push(null);
+      eQ.push(null);
+    } else {
+      eI.push(deI - meI);
+      eQ.push(deQ - meQ);
+    }
+  }
+  return { sI, sQ, eI, eQ };
 }
 
 function drawConnectedSeries(ctx, values, toX, toY) {
@@ -822,25 +947,59 @@ function drawSEPlot(sweeps) {
   ctx.fillRect(0, 0, width, height);
 
   const center = plotCenter((sweeps || []).flat());
-  const extracted = extractSE(sweeps, center);
-  const hasSE = extracted.sMag.some((value) => value != null);
+  const dataSE = extractSE(sweeps, center);
+  let extracted = seToPlot(dataSE);
+  if (seCalEnabled) {
+    if (!seCalPoints || !seCalPoints.length) {
+      updateSEReadout(null);
+      drawSEMessage(ctx, width, height, dpr, [
+        "Save a thru to the selected I/Q memory,",
+        "then Data − Mem subtracts it from live S/E.",
+      ]);
+      return;
+    }
+    const memSE = extractSE([seCalPoints], autoCenter(seCalPoints));
+    const memPlot = seToPlot(memSE);
+    if (!seHasValues(memPlot)) {
+      updateSEReadout(null);
+      drawSEMessage(ctx, width, height, dpr, [
+        `Memory ${seCalSlot || selectedSlot()} has no usable S/E.`,
+        "Overlay both LO states in the thru capture before Save.",
+      ]);
+      return;
+    }
+    if (!seHasValues(extracted)) {
+      updateSEReadout(null);
+      drawSEMessage(ctx, width, height, dpr, [
+        "Need two opposite I/Q clusters in the live data.",
+        "Overlay more DUT sweeps, then Data − Mem.",
+      ]);
+      return;
+    }
+    extracted = seToPlot(subtractSE(dataSE, memSE));
+  }
+  const hasSE = seHasValues(extracted);
   if (!hasSE) {
     updateSEReadout(null);
-    ctx.fillStyle = "#93a4b8";
-    ctx.font = `${Math.round(12 * dpr)}px Segoe UI, sans-serif`;
-    ctx.textAlign = "center";
-    ctx.fillText("Need two opposite I/Q clusters at each frequency. Overlay more sweeps.", width / 2, height / 2);
+    const message = seCalEnabled
+      ? "No overlapping S/E between live data and memory."
+      : "Need two opposite I/Q clusters at each frequency. Overlay more sweeps.";
+    drawSEMessage(ctx, width, height, dpr, [message]);
     return;
   }
 
   updateSEReadout(extracted);
 
-  const magS = seriesExtent(extracted.sMag.filter((value) => value != null));
-  const magE = seriesExtent(extracted.eMag.filter((value) => value != null));
+  const sMagPlot = mapMagSeries(extracted.sMag);
+  const eMagPlot = mapMagSeries(extracted.eMag);
+  const magSValues = sMagPlot.filter((value) => value != null);
+  const magEValues = eMagPlot.filter((value) => value != null);
+  const magS = magSValues.length ? seriesExtent(magSValues) : seDbfsEnabled ? { min: -80, max: 0 } : { min: 0, max: 1 };
+  const magE = magEValues.length ? seriesExtent(magEValues) : seDbfsEnabled ? { min: -80, max: 0 } : { min: 0, max: 1 };
   const phaseSExtent = { min: 0, max: 180 };
   const phaseEExtent = { min: -180, max: 180 };
-  const left = Math.round(52 * dpr);
-  const right = Math.round(44 * dpr);
+  const left = Math.round((seDbfsEnabled ? 58 : 52) * dpr);
+  const right = Math.round((seDbfsEnabled ? 52 : 44) * dpr);
   const top = Math.round(6 * dpr);
   const bottom = Math.round(22 * dpr);
   const gap = Math.round(5 * dpr);
@@ -853,9 +1012,9 @@ function drawSEPlot(sweeps) {
   const radiusHi = radius * 1.8;
   const selected = selectedFreqIndex;
   const panels = [
-    { label: "|S|", values: extracted.sMag, extent: magS, color: "#5b8def", phase: false },
+    { label: seDbfsEnabled ? "|S| dB" : "|S|", values: sMagPlot, extent: magS, color: "#5b8def", phase: false },
     { label: "∠S", values: extracted.sPhase, extent: phaseSExtent, color: "#5b8def", phase: true },
-    { label: "|E|", values: extracted.eMag, extent: magE, color: "#e2b15a", phase: false },
+    { label: seDbfsEnabled ? "|E| dB" : "|E|", values: eMagPlot, extent: magE, color: "#e2b15a", phase: false },
     { label: "∠E", values: extracted.ePhase, extent: phaseEExtent, color: "#e2b15a", phase: true },
   ];
 
@@ -911,6 +1070,17 @@ function drawSEPlot(sweeps) {
   ctx.fillText("890", toX((890 - 700) / 10), xAxisY);
   ctx.textAlign = "right";
   ctx.fillText("1080 MHz", toX(FREQ_MHZ.length - 1), xAxisY);
+}
+
+function drawSEMessage(ctx, width, height, dpr, lines) {
+  ctx.fillStyle = "#93a4b8";
+  ctx.font = `${Math.round(12 * dpr)}px Segoe UI, sans-serif`;
+  ctx.textAlign = "center";
+  const step = 16 * dpr;
+  const start = height / 2 - ((lines.length - 1) * step) / 2;
+  lines.forEach((line, index) => {
+    ctx.fillText(line, width / 2, start + index * step);
+  });
 }
 
 function selectedSlot() {
@@ -992,6 +1162,11 @@ async function saveMemory() {
   try {
     const result = await api("/api/memory/save", body);
     renderMemoryOptions(result.memories, slot);
+    if (kind === "iq" && seCalEnabled) {
+      seCalSlot = slot;
+      seCalPoints = (body.points || []).slice();
+      if (iqView === "se") redrawPlot();
+    }
     log(`Saved ${result.n_samples} samples to ${memoryKindLabel(kind)} memory ${slot}`);
   } catch (error) {
     log(`Save failed: ${error.message}`);
@@ -1019,6 +1194,46 @@ async function recallMemory() {
   } catch (error) {
     log(`Recall failed: ${error.message}`);
   }
+}
+
+async function loadSECalMemory({ quiet } = {}) {
+  const slot = selectedSlot();
+  seCalSlot = slot;
+  try {
+    const data = await api("/api/memory/recall", { slot, kind: "iq" });
+    seCalPoints = Array.isArray(data.points) ? data.points : [];
+  } catch (error) {
+    seCalPoints = [];
+    if (!quiet) log(`Data − Mem: ${error.message}`);
+  }
+}
+
+async function toggleSECal() {
+  if (seCalEnabled) {
+    seCalEnabled = false;
+    applyPlotChrome();
+    redrawPlot();
+    return;
+  }
+  seCalEnabled = true;
+  applyPlotChrome();
+  await loadSECalMemory();
+  redrawPlot();
+  if (seCalPoints && seCalPoints.length) {
+    log(`Data − Mem on: subtracting I/Q memory ${seCalSlot} (thru cal) from live S/E`);
+  }
+}
+
+function toggleSEDbfs() {
+  seDbfsEnabled = !seDbfsEnabled;
+  applyPlotChrome();
+  redrawPlot();
+}
+
+async function onMemorySlotChange() {
+  if (!seCalEnabled || iqView !== "se") return;
+  await loadSECalMemory({ quiet: true });
+  redrawPlot();
 }
 
 function clearStreamCard() {
@@ -1257,6 +1472,9 @@ clearStatsBtn.addEventListener("click", clearStats);
 clearDataBtn.addEventListener("click", clearStoredData);
 saveMemBtn.addEventListener("click", saveMemory);
 recallMemBtn.addEventListener("click", recallMemory);
+if (seCalBtn) seCalBtn.addEventListener("click", toggleSECal);
+if (seDbfsBtn) seDbfsBtn.addEventListener("click", toggleSEDbfs);
+if (memorySlot) memorySlot.addEventListener("change", onMemorySlotChange);
 function submitControl() {
   if (sendBtn.disabled) return;
   const command = rawCommand.value.trim();

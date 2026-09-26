@@ -530,6 +530,18 @@ button:disabled {
   display: flex;
 }
 
+.plot-card[data-view="se"] #se-cal-btn,
+.plot-card[data-view="se"] #se-dbfs-btn {
+  display: block;
+}
+
+#se-cal-btn.active,
+#se-dbfs-btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(62, 198, 180, 0.12);
+}
+
 .plot-card[data-mode="ppg"] .plot-stage,
 .plot-card[data-mode="accel"] .plot-stage {
   grid-template-columns: minmax(0, 1fr) auto;
