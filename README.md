@@ -30,7 +30,7 @@ From the v2 spec:
 
 - Advertised name: `Orbio-` plus 6 characters from the Bluetooth ID
 - The device advertises just before a sweep. Default is 30 s sweep, 10 min sleep, so keep scanning until it appears
-- The app starts in **Scanning**. **Pause Scanning** / **Resume Scanning** stop or restart that watch. After connect the status shows **Connected**, and Sweep Data notifications are enabled. The remote only transfers a frame if notifications stay enabled
+- The app starts in **Scanning**. If exactly one Orbio device is found, it connects automatically. If a second Orbio device appears, **Disconnect** then click **Connect** on the one you want. **Pause Scanning** / **Resume Scanning** stop or restart that watch. After connect the status shows **Connected**, and Sweep Data notifications are enabled. The remote only transfers a frame if notifications stay enabled
 - Sweep, PPG, and accel frames share the same notify characteristic. A 10-byte header appears only at the start of each frame: `AA BB CC`, 1-byte type, 4-byte timestamp, 2-byte length. Type `1` is sweep, `2` is PPG, `3` is accel
 - Sweep length is little-endian (4992 I/Q bytes). PPG and accel length on the remote is big-endian (typical PPG payload **216**, typical accel **144–162**)
 - One sweep is 4992 bytes: 32 I/Q samples × 39 frequencies (700–1080 MHz, 10 MHz steps), 16-bit I and 16-bit Q, split across BLE packets of up to 240 bytes

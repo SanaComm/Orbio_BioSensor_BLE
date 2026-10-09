@@ -431,6 +431,18 @@ button:disabled {
   color: var(--muted);
 }
 
+.devices li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 6px;
+}
+
+.devices li.connected-device strong {
+  color: var(--ok);
+}
+
 .devices .hint {
   margin: 2px 0 0;
 }

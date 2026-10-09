@@ -130,12 +130,15 @@ function setMeta(target, entries) {
   }
 }
 
+let uiConnected = false;
+let uiConnectedAddress = "";
+
 function renderDevices(devices, connected, watching) {
   deviceList.innerHTML = "";
   if (!devices || devices.length === 0) {
     const empty = document.createElement("li");
     empty.textContent = watching
-      ? "Scanning for Orbio… will connect automatically."
+      ? "Scanning for Orbio… will connect automatically if only one is found."
       : "Scanning is paused. Resume Scanning to keep waiting for the remote.";
     deviceList.append(empty);
     return;
@@ -146,18 +149,31 @@ function renderDevices(devices, connected, watching) {
     const title = document.createElement("strong");
     title.textContent = device.name || "(no name)";
     if (device.likely_orbio) item.classList.add("likely-orbio");
+    const isLinked = Boolean(connected && device.address && device.address === uiConnectedAddress);
+    if (isLinked) item.classList.add("connected-device");
     const detail = document.createElement("div");
     detail.className = "hint";
     const rssi = device.rssi != null ? `RSSI ${device.rssi} dBm` : "RSSI unknown";
     detail.textContent = `${device.address} · ${rssi}${device.simulated ? " · simulator" : ""}`;
     label.append(title, detail);
-    item.append(label);
+    const button = document.createElement("button");
+    if (isLinked) {
+      button.textContent = "Connected";
+      button.disabled = true;
+    } else {
+      button.textContent = "Connect";
+      button.disabled = Boolean(connected);
+      button.addEventListener("click", () => connect(device.address));
+    }
+    item.append(label, button);
     deviceList.append(item);
   }
 }
 
 function renderStatus(status) {
   const watching = Boolean(status.watching);
+  uiConnected = Boolean(status.connected);
+  uiConnectedAddress = (status.device && status.device.address) || "";
   connIndicator.classList.remove("on", "off", "scan");
   if (status.connected) {
     connIndicator.textContent = "Connected";
@@ -201,8 +217,7 @@ function renderStatus(status) {
   else if (status.last_sweep) setSweepMeta(status.last_sweep);
   else sweepMeta.innerHTML = "";
 
-  if (status.connected) deviceList.innerHTML = "";
-  else if (status.devices) renderDevices(status.devices, status.connected, watching);
+  renderDevices(status.devices || [], status.connected, watching);
 }
 
 function setPacketLoss(count, total) {
@@ -1416,6 +1431,16 @@ async function toggleLooking() {
   }
 }
 
+async function connect(address) {
+  try {
+    log(`Connecting to ${address}...`);
+    const status = await api("/api/connect", { address });
+    renderStatus(status);
+  } catch (error) {
+    log(`Connect failed: ${error.message}`);
+  }
+}
+
 async function disconnect() {
   try {
     const status = await api("/api/disconnect", {});
@@ -1507,7 +1532,7 @@ function handleCaptureMessage(event) {
   const message = JSON.parse(event.data);
   if (message.event === "log") log(message.payload.message);
   if (message.event === "status") renderStatus(message.payload);
-  if (message.event === "devices") renderDevices(message.payload.devices || [], false, true);
+  if (message.event === "devices") renderDevices(message.payload.devices || [], uiConnected, true);
   if (message.event === "packet_loss") {
     setPacketLoss(message.payload.count, message.payload.total);
   }

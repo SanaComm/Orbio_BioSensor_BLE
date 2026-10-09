@@ -109,8 +109,6 @@ class CaptureSession:
             cancel()
 
     async def start_watch(self, name_contains: str = "Orbio", pass_s: float = 20.0) -> None:
-        if self.status.connected:
-            return
         if self._watch_task is not None and not self._watch_task.done():
             return
         needle = name_contains.strip() or "Orbio"
@@ -120,18 +118,11 @@ class CaptureSession:
         self._watch_task = asyncio.create_task(self._watch_then_connect(needle, pass_s))
 
     async def _watch_then_connect(self, name_contains: str, pass_s: float) -> None:
-        found: DeviceInfo | None = None
         try:
-            found = await self._watch_loop(name_contains, pass_s)
+            await self._watch_loop(name_contains, pass_s)
         finally:
             if self._watch_task is asyncio.current_task():
                 self._watch_task = None
-        if found is not None and not self.status.connected and not self._connecting:
-            try:
-                await self._do_connect(found.address)
-            except Exception as exc:
-                detail = str(exc).strip() or repr(exc)
-                await self._emit("log", {"message": f"Auto-connect failed: {detail}"})
 
     async def stop_watch(self) -> None:
         self._watch_stop.set()
@@ -144,7 +135,16 @@ class CaptureSession:
             except asyncio.CancelledError:
                 pass
 
-    async def _watch_loop(self, name_contains: str, pass_s: float) -> DeviceInfo | None:
+    def _sorted_devices(self, items: list[DeviceInfo]) -> list[DeviceInfo]:
+        def key(item: DeviceInfo) -> tuple:
+            linked = 0 if self.status.device and item.address == self.status.device.address else 1
+            orbio = 0 if item.likely_orbio or is_orbio_advertised_name(item.name) else 1
+            strength = -(item.rssi if item.rssi is not None else -999)
+            return (linked, orbio, strength, (item.name or item.address).lower())
+
+        return sorted(items, key=key)
+
+    async def _watch_loop(self, name_contains: str, pass_s: float) -> None:
         needle = name_contains.lower()
         self.status.scanning = True
         self.status.watching = True
@@ -154,13 +154,15 @@ class CaptureSession:
             {
                 "message": (
                     f"Looking for advertised names containing '{name_contains}'. "
-                    "This keeps scanning until one appears; the remote only advertises "
-                    f"just before a sweep. Each pass is {pass_s:.0f}s."
+                    "One Orbio device is connected automatically. If a second appears, "
+                    f"disconnect and click Connect on the one you want. Each pass is {pass_s:.0f}s."
                 )
             },
         )
         adapter_logged = False
+        multi_logged = False
         pass_no = 0
+        known: dict[str, DeviceInfo] = {item.address: item for item in self.status.devices}
         try:
             while not self._watch_stop.is_set():
                 pass_no += 1
@@ -196,10 +198,26 @@ class CaptureSession:
                     for device in devices
                     if is_orbio_advertised_name(device.name) or (device.name and needle in device.name.lower())
                 ]
-                if hits:
-                    self.status.devices = hits
-                    await self._emit("devices", {"devices": [asdict(device) for device in hits]})
-                    device = hits[0]
+                for device in hits:
+                    known[device.address] = device
+                if self.status.connected and self.status.device is not None:
+                    known.setdefault(self.status.device.address, self.status.device)
+
+                if known:
+                    self.status.devices = self._sorted_devices(list(known.values()))
+                    await self._emit(
+                        "devices",
+                        {"devices": [asdict(device) for device in self.status.devices]},
+                    )
+                    await self._emit("status", self.public_status())
+
+                if (
+                    not self.status.connected
+                    and not self._connecting
+                    and len(known) == 1
+                    and not self._watch_stop.is_set()
+                ):
+                    device = next(iter(known.values()))
                     rssi = f"{device.rssi} dBm" if device.rssi is not None else "RSSI unknown"
                     await self._emit(
                         "log",
@@ -210,8 +228,27 @@ class CaptureSession:
                             )
                         },
                     )
-                    return device
-                elif not self.status.devices:
+                    try:
+                        await self._do_connect(device.address, resume_watch_on_fail=False)
+                    except Exception as exc:
+                        detail = str(exc).strip() or repr(exc)
+                        await self._emit("log", {"message": f"Auto-connect failed: {detail}"})
+                    if not self.status.connected:
+                        continue
+
+                if len(known) >= 2 and not multi_logged:
+                    multi_logged = True
+                    await self._emit(
+                        "log",
+                        {
+                            "message": (
+                                f"{len(known)} Orbio devices found. "
+                                "Disconnect if you are already linked, then click Connect "
+                                "on the device you want."
+                            )
+                        },
+                    )
+                elif not known:
                     await self._emit(
                         "log",
                         {
@@ -228,7 +265,6 @@ class CaptureSession:
                         await asyncio.wait_for(self._watch_stop.wait(), timeout=remaining)
                     except asyncio.TimeoutError:
                         pass
-            return None
         finally:
             self.status.scanning = False
             self.status.watching = False
@@ -237,17 +273,19 @@ class CaptureSession:
     async def connect(self, address: str) -> None:
         await self.stop_watch()
         await self._do_connect(address)
+        if self.status.connected:
+            await self.start_watch(self._watch_name, self._watch_pass_s)
 
-    async def _do_connect(self, address: str) -> None:
+    async def _do_connect(self, address: str, *, resume_watch_on_fail: bool = True) -> None:
         if self.status.connected or self._connecting:
             return
         self._connecting = True
         try:
-            await self._connect_body(address)
+            await self._connect_body(address, resume_watch_on_fail=resume_watch_on_fail)
         finally:
             self._connecting = False
 
-    async def _connect_body(self, address: str) -> None:
+    async def _connect_body(self, address: str, *, resume_watch_on_fail: bool = True) -> None:
         known = next((item for item in self.status.devices if item.address == address), None)
         label = (known.name if known else None) or address
         last_error: Exception | None = None
@@ -288,7 +326,8 @@ class CaptureSession:
                     await self._emit("log", {"message": f"Retrying in {delay}s…"})
                     await asyncio.sleep(delay)
         if device is None:
-            await self.start_watch(self._watch_name, self._watch_pass_s)
+            if resume_watch_on_fail:
+                await self.start_watch(self._watch_name, self._watch_pass_s)
             raise last_error if last_error else ConnectionError("Connect failed")
         if known is not None:
             device = DeviceInfo(
