@@ -78,7 +78,7 @@ On every plot, **Save** copies what is on screen into the selected slot for that
 
 ## Controls
 
-Set Parameters is a comma-separated ASCII write. Sweep commands start at **10**, PPG at **20**, accel at **30**, misc at **40**. Click a row to fill the box, then **Send** or press **Enter**.
+Set Parameters is a comma-separated ASCII write. Sweep commands start at **10**, PPG at **20**, accel at **30**, misc at **40**, low power at **50**. Click a row to fill the box, then **Send** or press **Enter**.
 
 | Command | Example |
 | --- | --- |
@@ -93,3 +93,4 @@ Set Parameters is a comma-separated ASCII write. Sweep commands start at **10**,
 | Start accel | `30` |
 | Stop accel | `31` |
 | Print samples | `40,1` / `40,0` |
+| Low power mode | `50` |

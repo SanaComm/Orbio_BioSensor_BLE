@@ -84,6 +84,7 @@ CONTROL_COMMANDS = (
     ControlCommand(30, "start_accel", "30", "Start accelerometer sampling"),
     ControlCommand(31, "stop_accel", "31", "Stop accelerometer sampling"),
     ControlCommand(40, "print_samples", "40,1", "Print samples: 40,1 enable, 40,0 disable"),
+    ControlCommand(50, "low_power", "50", "Go to low power mode"),
 )
 
 
