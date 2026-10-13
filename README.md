@@ -30,8 +30,8 @@ From the v2 spec:
 
 - Advertised name: `Orbio-` plus 6 characters from the Bluetooth ID
 - The device advertises just before a sweep. Default is 30 s sweep, 10 min sleep, so keep scanning until it appears
-- The app starts in **Scanning**. If exactly one Orbio device is found, it connects automatically. If a second Orbio device appears, **Disconnect** then click **Connect** on the one you want. **Pause Scanning** / **Resume Scanning** stop or restart that watch. After connect the status shows **Connected**, and Sweep Data notifications are enabled. The remote only transfers a frame if notifications stay enabled
-- Sweep, PPG, and accel frames share the same notify characteristic. A 10-byte header appears only at the start of each frame: `AA BB CC`, 1-byte type, 4-byte timestamp, 2-byte length. Type `1` is sweep, `2` is PPG, `3` is accel
+- The app starts in **Scanning**. If exactly one Orbio device is found, it connects automatically. If a second Orbio device appears, **Disconnect** then click **Connect** on the one you want. **Pause Scanning** / **Resume Scanning** stop or restart that watch. After connect the status shows **Connected**, and Sweep Data notifications are enabled. The remote only transfers a frame if notifications stay enabled. Device shows **Parameters** from the report-parameters characteristic, and **Battery** as the last comma-separated value followed by `%` when that value is 0–100
+- Sweep, PPG, and accel frames share the same notify characteristic. A 10-byte header appears only at the start of each frame: `AA BB CC`, 1-byte type, 4-byte timestamp, 2-byte length. Type `1` is sweep, `2` is PPG, `3` is accel. In sweep mode the remote sends an RF frame then an accel frame. In PPG mode it sends a PPG frame then accel frame(s).
 - Sweep length is little-endian (4992 I/Q bytes). PPG and accel length on the remote is big-endian (typical PPG payload **216**, typical accel **144–162**)
 - One sweep is 4992 bytes: 32 I/Q samples × 39 frequencies (700–1080 MHz, 10 MHz steps), 16-bit I and 16-bit Q, split across BLE packets of up to 240 bytes
 - One PPG frame is typically 72 samples of 3 bytes (216 bytes) and usually fits in one BLE packet with the header. Each sample’s top nibble is the channel tag 1–8; the remaining 20 bits are a signed big-endian value
@@ -61,24 +61,24 @@ The slot dropdown, **Save**, and **Recall** sit in the right-hand column on all 
 
 ## How the plot works
 
-The lower-right window is **one mode at a time**. Send `10` / `20` / `30` to start capture on the remote and switch the plot. Incoming headers also switch it: type `1` → I/Q, type `2` → PPG, type `3` → accel. While PPG or accel is selected, later sweep frames are still saved but do not replace that plot. **Enter** in the Control field sends the command (same as **Send**), only while **Connected**.
+The lower-right window follows the capture command. Send `10` / `20` / `30` to start capture on the remote and switch the main plot. Incoming headers also switch it: type `1` → I/Q, type `2` → PPG. Type `3` (accel) during sweep or PPG does **not** replace the main plot; it fills the left **X / Y / Z** column. Command `30` still uses the full accel plot. While PPG or accel is selected, later sweep frames are still saved but do not replace that plot. **Enter** in the Control field sends the command (same as **Send**), only while **Connected**.
 
 **I/Q.** The plot starts **blank**. Each completed 4992-byte sweep is 39 frequencies × 32 samples = 1248 I/Q points. **# Sweeps Shown** (default **10**) overlays the last N completed frames. Send `10` to start a sweep set (that also clears the overlay). Send `11` to stop.
 
 - **I** is the horizontal axis, **Q** is the vertical axis. Color runs from 700 MHz (blue) to 1080 MHz (yellow).
-- The crosshair is at **Center I** / **Center Q**. Those fill from the data until you type values. Both axes share the same autoscale around that center.
+- **Center I** / **Center Q** sit above the RF plot with **Freq**. Those fill from the data until you type values. The crosshair is at that center, and both axes share the same autoscale around it. **Accel** is labeled at the top left of the left column; **I / Q** (or **Magnitude / Phase** / **S / E**) is at the top left of the RF panel. The I/Q, Mag/Phase, and S/E views use the same full-size black plot area; the I/Q constellation stays square inside it. During sweep and PPG, the left column shows live accelerometer **X / Y / Z** (500-sample window) from the accel frames that follow each RF or PPG packet. The accel column starts at the same height as the RF plot.
 - Hover the I/Q or Mag / Phase plot, or **Freq**, and use the mouse wheel to highlight one frequency (700–1080 MHz, 10 MHz steps). Click **Freq** for All.
 - **Mag / Phase** switches to amplitude and phase versus frequency, using the same **Center I** / **Center Q** as the constellation (not 0,0). Each I/Q sample is drawn as a point (no connecting lines): magnitude = √((I−centerI)²+(Q−centerQ)²) and phase = atan2(Q−centerQ, I−centerI) in degrees on a fixed ±180° axis. Positive phase is teal; negative phase is orange, on both Mag and Phase. The same **# Sweeps Shown** overlay applies. **S / E** is a third view: at each frequency the shown samples are split into two I/Q clusters by the principal axis through Center I/Q (not a 0° phase cut). The two complex means Z̄₊ and Z̄₋ are formed from raw I+jQ, then S(f)=(Z̄₊−Z̄₋)/2 is the signal (reversing path) and E(f)=(Z̄₊+Z̄₋)/2 is the error (common/DC path). The sign of S is chosen so ∠S is 0°–180°. ∠E stays ±180° (true offset direction). With a frequency selected, |S| and ∠S at that marker are shown next to **Freq**. A frequency is drawn only if both clusters are populated and sit on opposite sides of the center. Overlay several sweeps so both LO phase states are present. **Data − Mem** (S/E view only) subtracts the selected I/Q memory from the live S(f) and E(f). Save a thru (TX to RX feedback) into a memory slot, remove the thru, capture the DUT, then press **Data − Mem** — do not Recall, or the plot would become the thru instead of the DUT. S and E are subtracted as complex values; memory S is sign-aligned to live S so a 180° cluster flip does not cancel the thru. The plot and |S|/∠S readout then show the DUT response. **dBFS** switches the |S| and |E| vertical axes (and the |S| readout) to 20·log₁₀(mag/32768); phase stays in degrees. **I / Q** returns to the constellation.
 
-**PPG.** Eight stacked traces (channels 1–8), each with its own Y autoscale. The X axis is a 500-sample scrolling window.
+**PPG.** Eight stacked traces (channels 1–8), each with its own Y autoscale. The X axis is a 500-sample scrolling window. Accel frames that follow each PPG packet fill the left X/Y/Z column.
 
-**Accel.** Three stacked traces (X, Y, Z) with the same 500-sample window.
+**Accel.** Command `30` uses the main plot for three stacked traces (X, Y, Z) with the same 500-sample window. The left companion column is hidden so X/Y/Z is not drawn twice.
 
-On every plot, **Save** copies what is on screen into the selected slot for that mode, and **Recall** draws that slot back. **Clear Plot** empties the on-screen drawing only. Stream shows **Packet Loss # = lost / total BLE packets**. **Clear Stats** zeros packet loss, the Stream card, and the sweep/PPG/accel counts so the next capture starts at #1. Files already on disk are kept.
+On every plot, **Save** copies what is on screen into the selected slot for that mode, and **Recall** draws that slot back. **Clear Plot** empties the on-screen drawing only. Stream shows **Sweeps saved**, **PPG saved**, **Accel saved**, and **Packet Loss # = lost / total BLE packets**. **Clear Stats** zeros packet loss, the Stream card, and those counts so the next capture starts at #1. Files already on disk are kept.
 
 ## Controls
 
-Set Parameters is a comma-separated ASCII write. Sweep commands start at **10**, PPG at **20**, accel at **30**, misc at **40**, low power at **50**. Click a row to fill the box, then **Send** or press **Enter**.
+Set Parameters is a comma-separated ASCII write. Sweep commands start at **10**, PPG at **20**, accel at **30**, misc at **40**, low power at **50**. In Control, start/stop pairs share a row (`10`/`11`, `20`/`21`, `30`/`31`, `40,1`/`40,0`); **15** and **50** each have their own line. Click a row to fill the box, then **Send** or press **Enter**.
 
 | Command | Example |
 | --- | --- |
@@ -87,7 +87,6 @@ Set Parameters is a comma-separated ASCII write. Sweep commands start at **10**,
 | I/Q offsets (mV) | `12,-100,200` |
 | Frequency (MHz) | `13,830` |
 | LNA, VGA | `15,1,7` |
-| Sweep s, interval s | `16,30,600` |
 | Start PPG | `20` |
 | Stop PPG | `21` |
 | Start accel | `30` |

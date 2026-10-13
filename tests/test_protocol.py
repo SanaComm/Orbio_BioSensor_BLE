@@ -20,6 +20,7 @@ from orbio.protocol import (
     parse_accel,
     parse_frame_header,
     parse_ppg,
+    parse_report_parameters,
     parse_sweep,
 )
 from orbio.radio import _fake_accel, _fake_ppg, _fake_sweep
@@ -191,6 +192,13 @@ def test_assembler_packet_count_and_clear_stats() -> None:
 
 def test_encode_command() -> None:
     assert encode_parameter_write("12,-100,200") == b"12,-100,200"
+
+
+def test_parse_report_parameters_battery() -> None:
+    parsed = parse_report_parameters(b"15,8,0,7,0,600,100")
+    assert parsed["raw"] == "15,8,0,7,0,600,100"
+    assert parsed["battery"] == "100"
+    assert "battery" not in parse_report_parameters(b"10,30,600")
 
 
 def test_orbio_name_filter() -> None:

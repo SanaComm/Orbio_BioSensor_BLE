@@ -793,6 +793,8 @@ class CaptureSession:
             return
         if mode == "iq" and self._plot_lock in {"ppg", "accel"}:
             return
+        if mode == "accel" and self._plot_lock in {"iq", "ppg"}:
+            return
         if mode in {"ppg", "accel"}:
             self._plot_lock = mode
         labels = {"iq": "I/Q sweep", "ppg": "PPG", "accel": "accel"}

@@ -320,7 +320,7 @@ def parse_fw_id(payload: bytes) -> int | None:
 
 def parse_report_parameters(payload: bytes) -> dict[str, str]:
     text = payload.decode("ascii", errors="replace").strip()
-    fields = [part.strip() for part in text.split(",")]
+    fields = [part.strip() for part in text.split(",") if part.strip() != ""]
     names = ("pll_gain_db", "active_sweep_s", "interval_s")
     parsed = {"raw": text}
     for index, name in enumerate(names):
@@ -329,4 +329,11 @@ def parse_report_parameters(payload: bytes) -> dict[str, str]:
     extra = fields[len(names) :]
     if extra:
         parsed["extra"] = ",".join(extra)
+    if fields:
+        try:
+            pct = float(fields[-1])
+        except ValueError:
+            pct = None
+        if pct is not None and 0 <= pct <= 100:
+            parsed["battery"] = fields[-1]
     return parsed

@@ -94,17 +94,47 @@ h2 {
   overflow: hidden;
 }
 
-.plot-card > h2 {
+.plot-panel-title {
   margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+  flex-shrink: 0;
+  align-self: flex-start;
+  line-height: 1.2;
 }
 
 .plot-stage {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: 8.5rem minmax(0, 1fr) 10.5rem;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 8px 10px;
   align-items: stretch;
+  overflow: hidden;
+}
+
+.plot-freq-row {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.plot-companion-accel {
+  grid-column: 1;
+  grid-row: 2;
+  justify-content: flex-start;
+  gap: 0;
+  overflow: hidden;
+}
+
+.plot-main {
+  grid-column: 2;
+  grid-row: 2;
+}
+
+.plot-side-right {
+  grid-column: 3;
+  grid-row: 1 / span 2;
 }
 
 .plot-side {
@@ -112,10 +142,37 @@ h2 {
   flex-direction: column;
   justify-content: center;
   gap: 10px;
+  min-height: 0;
+}
+
+.plot-side.plot-companion-accel {
+  justify-content: flex-start;
+  gap: 0;
 }
 
 .plot-side-left {
-  align-items: center;
+  align-items: stretch;
+  min-width: 0;
+  min-height: 0;
+}
+
+.plot-wrap-accel {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+}
+
+#accel-side-plot {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  background: #0b1117;
+  border: 1px solid var(--line);
+  border-radius: 10px;
 }
 
 .plot-side-right {
@@ -129,6 +186,8 @@ h2 {
 .plot-main {
   min-width: 0;
   min-height: 0;
+  height: 100%;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -139,8 +198,12 @@ h2 {
   flex-shrink: 0;
   align-items: flex-end;
   justify-content: center;
-  gap: 10px;
-  margin-bottom: 2px;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin-bottom: 0;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .plot-freq-field {
@@ -199,6 +262,11 @@ h2 {
   width: 92px;
   cursor: ns-resize;
   text-align: center;
+}
+
+.plot-card[data-view="se"] .plot-freq-row .plot-field input,
+.plot-card[data-view="se"] #plot-freq {
+  width: 68px;
 }
 
 #sweeps-shown {
@@ -517,14 +585,20 @@ button:disabled {
   color: var(--accent);
 }
 
+.commands li.cmd-span {
+  grid-column: 1 / -1;
+}
+
 .plot-wrap {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   width: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
   position: relative;
+  overflow: hidden;
 }
 
 .plot-card[data-mode="ppg"] .plot-iq-only,
@@ -554,13 +628,32 @@ button:disabled {
   background: rgba(62, 198, 180, 0.12);
 }
 
-.plot-card[data-mode="ppg"] .plot-stage,
+.plot-card[data-mode="accel"] .plot-companion-accel {
+  display: none;
+}
+
+.plot-card[data-mode="ppg"] .plot-freq-row {
+  display: none;
+}
+
 .plot-card[data-mode="accel"] .plot-stage {
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) 10.5rem;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.plot-card[data-mode="accel"] .plot-main {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.plot-card[data-mode="accel"] .plot-side-right {
+  grid-column: 2;
+  grid-row: 1;
 }
 
 .plot-card[data-mode="ppg"] .plot-main,
 .plot-card[data-mode="accel"] .plot-main,
+.plot-card[data-view="iq"] .plot-main,
 .plot-card[data-view="magphase"] .plot-main,
 .plot-card[data-view="se"] .plot-main {
   align-items: stretch;

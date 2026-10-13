@@ -2,6 +2,7 @@ const logEl = document.getElementById("log");
 const deviceList = document.getElementById("device-list");
 const deviceMeta = document.getElementById("device-meta");
 const sweepMeta = document.getElementById("sweep-meta");
+const streamCounts = document.getElementById("stream-counts");
 const meterFill = document.getElementById("meter-fill");
 const meterLabel = document.getElementById("meter-label");
 const pauseBtn = document.getElementById("pause-btn");
@@ -11,6 +12,7 @@ const sendBtn = document.getElementById("send-btn");
 const rawCommand = document.getElementById("raw-command");
 const iqPlot = document.getElementById("iq-plot");
 const iqCtx = iqPlot.getContext("2d");
+const accelSidePlot = document.getElementById("accel-side-plot");
 const memorySlot = document.getElementById("memory-slot");
 const clearDataBtn = document.getElementById("clear-data-btn");
 const saveMemBtn = document.getElementById("save-mem-btn");
@@ -118,6 +120,15 @@ function setAccelMeta(accel) {
   ]);
 }
 
+function formatBattery(parameters) {
+  if (!parameters) return null;
+  const raw = parameters.battery != null && parameters.battery !== "" ? parameters.battery : null;
+  const text = raw != null ? String(raw) : String(parameters.raw || "").split(",").pop();
+  const value = Number(String(text || "").trim());
+  if (!Number.isFinite(value) || value < 0 || value > 100) return null;
+  return Number.isInteger(value) ? `${value}%` : `${value.toFixed(1)}%`;
+}
+
 function setMeta(target, entries) {
   target.innerHTML = "";
   for (const [key, value] of entries) {
@@ -206,10 +217,15 @@ function renderStatus(status) {
     ["Conn interval", status.connection_interval_ms != null ? `${status.connection_interval_ms} ms` : null],
     ["Firmware", status.fw_id],
     ["Parameters", status.parameters ? status.parameters.raw : null],
-    ["Sweeps saved", status.sweep_count],
-    ["PPG saved", status.ppg_count],
-    ["Accel saved", status.accel_count],
+    ["Battery", formatBattery(status.parameters)],
   ]);
+  if (streamCounts) {
+    setMeta(streamCounts, [
+      ["Sweeps saved", status.sweep_count],
+      ["PPG saved", status.ppg_count],
+      ["Accel saved", status.accel_count],
+    ]);
+  }
 
   if (status.plot_mode) setPlotMode(status.plot_mode);
   if (status.plot_mode === "ppg" && status.last_ppg) setPpgMeta(status.last_ppg);
@@ -343,8 +359,8 @@ function clearIqBuffers() {
 
 function clearCurrentPlot() {
   if (plotMode === "ppg") ppgSeries = emptyPpgSeries();
-  else if (plotMode === "accel") accelSeries = emptyAccelSeries();
-  else clearIqBuffers();
+  else if (plotMode !== "accel") clearIqBuffers();
+  accelSeries = emptyAccelSeries();
   redrawPlot();
 }
 
@@ -415,7 +431,7 @@ function applyPlotChrome() {
     else if (iqView === "se") plotTitle.textContent = seCalEnabled ? "S / E − Mem" : "S / E";
     else plotTitle.textContent = "I / Q";
   }
-  iqPlot.classList.toggle("time-plot", plotMode !== "iq" || iqView !== "iq");
+  iqPlot.classList.add("time-plot");
   if (iqViewBtn) {
     if (iqView === "iq") iqViewBtn.textContent = "Mag / Phase";
     else if (iqView === "magphase") iqViewBtn.textContent = "S / E";
@@ -426,9 +442,18 @@ function applyPlotChrome() {
   if (iqView !== "se") updateSEReadout(null);
 }
 
+function accelChannels() {
+  return [
+    { label: "X", color: ACCEL_COLORS.x, values: accelSeries.x },
+    { label: "Y", color: ACCEL_COLORS.y, values: accelSeries.y },
+    { label: "Z", color: ACCEL_COLORS.z, values: accelSeries.z },
+  ];
+}
+
 function redrawPlot() {
   if (plotMode === "ppg") {
     drawStackedPlot(
+      iqPlot,
       ppgSeries.map((values, i) => ({
         label: `Ch ${i + 1}`,
         color: PPG_COLORS[i],
@@ -436,28 +461,26 @@ function redrawPlot() {
       })),
       "Waiting for PPG…"
     );
+    drawCompanionAccel();
     return;
   }
   if (plotMode === "accel") {
-    drawStackedPlot(
-      [
-        { label: "X", color: ACCEL_COLORS.x, values: accelSeries.x },
-        { label: "Y", color: ACCEL_COLORS.y, values: accelSeries.y },
-        { label: "Z", color: ACCEL_COLORS.z, values: accelSeries.z },
-      ],
-      "Waiting for accel…"
-    );
+    drawStackedPlot(iqPlot, accelChannels(), "Waiting for accel…");
     return;
   }
   if (iqView === "magphase") {
     drawMagPhasePlot(iqSweeps.slice(-sweepsShownLimit()));
-    return;
-  }
-  if (iqView === "se") {
+  } else if (iqView === "se") {
     drawSEPlot(iqSweeps.slice(-sweepsShownLimit()));
-    return;
+  } else {
+    drawIqPlot(iqHistory);
   }
-  drawIqPlot(iqHistory);
+  drawCompanionAccel();
+}
+
+function drawCompanionAccel() {
+  if (!accelSidePlot || plotMode === "accel") return;
+  drawStackedPlot(accelSidePlot, accelChannels(), "Accel…", { compact: true });
 }
 
 function seriesExtent(values) {
@@ -476,20 +499,24 @@ function seriesExtent(values) {
   return { min: min - pad, max: max + pad };
 }
 
-function drawStackedPlot(channels, emptyLabel) {
-  const box = iqPlot.parentElement;
-  const cssW = Math.max(160, Math.floor((box && box.clientWidth) || 480));
-  const cssH = Math.max(200, Math.floor((box && box.clientHeight) || 360));
+function drawStackedPlot(canvas, channels, emptyLabel, options) {
+  if (!canvas) return;
+  const compact = Boolean(options && options.compact);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const box = canvas.parentElement;
+  const cssW = Math.floor((box && box.clientWidth) || 0);
+  const cssH = Math.floor((box && box.clientHeight) || 0);
+  if (cssW < 40 || cssH < 40) return;
   const dpr = window.devicePixelRatio || 1;
   const width = Math.round(cssW * dpr);
   const height = Math.round(cssH * dpr);
-  if (iqPlot.width !== width || iqPlot.height !== height) {
-    iqPlot.width = width;
-    iqPlot.height = height;
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
   }
-  iqPlot.style.width = `${cssW}px`;
-  iqPlot.style.height = `${cssH}px`;
-  const ctx = iqCtx;
+  canvas.style.width = `${cssW}px`;
+  canvas.style.height = `${cssH}px`;
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = "#0b1117";
   ctx.fillRect(0, 0, width, height);
@@ -497,15 +524,15 @@ function drawStackedPlot(channels, emptyLabel) {
   const hasData = channels.some((ch) => ch.values.length);
   if (!hasData) {
     ctx.fillStyle = "#93a4b8";
-    ctx.font = `${Math.round(12 * dpr)}px Segoe UI, sans-serif`;
+    ctx.font = `${Math.round((compact ? 10 : 12) * dpr)}px Segoe UI, sans-serif`;
     ctx.textAlign = "center";
     ctx.fillText(emptyLabel, width / 2, height / 2);
     return;
   }
 
   const n = channels.length;
-  const left = Math.round(52 * dpr);
-  const right = Math.round(46 * dpr);
+  const left = Math.round((compact ? 34 : 52) * dpr);
+  const right = Math.round((compact ? 20 : 46) * dpr);
   const top = Math.round(6 * dpr);
   const gap = Math.round(4 * dpr);
   const stripH = Math.floor((height - top - gap * (n - 1)) / n);
@@ -1319,23 +1346,26 @@ function plotCenter(points) {
 function drawIqPlot(points) {
   points = points || [];
   const box = iqPlot.parentElement;
-  const availW = (box && box.clientWidth) || 0;
-  const availH = (box && box.clientHeight) || 0;
-  if (availW < 50 || availH < 50) return;
-  const cssSize = Math.max(120, Math.floor(Math.min(availW, availH)));
+  const cssW = Math.floor((box && box.clientWidth) || 0);
+  const cssH = Math.floor((box && box.clientHeight) || 0);
+  if (cssW < 50 || cssH < 50) return;
   const dpr = window.devicePixelRatio || 1;
-  const size = Math.round(cssSize * dpr);
-  if (iqPlot.width !== size || iqPlot.height !== size) {
-    iqPlot.width = size;
-    iqPlot.height = size;
+  const width = Math.round(cssW * dpr);
+  const height = Math.round(cssH * dpr);
+  if (iqPlot.width !== width || iqPlot.height !== height) {
+    iqPlot.width = width;
+    iqPlot.height = height;
   }
-  iqPlot.style.width = `${cssSize}px`;
-  iqPlot.style.height = `${cssSize}px`;
+  iqPlot.style.width = `${cssW}px`;
+  iqPlot.style.height = `${cssH}px`;
   const ctx = iqCtx;
-  ctx.clearRect(0, 0, size, size);
+  ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = "#0b1117";
-  ctx.fillRect(0, 0, size, size);
+  ctx.fillRect(0, 0, width, height);
 
+  const size = Math.min(width, height);
+  const ox = Math.round((width - size) / 2);
+  const oy = Math.round((height - size) / 2);
   const pad = Math.round(48 * dpr);
   const plot = size - pad * 2;
   ctx.font = `${Math.round(11 * dpr)}px Segoe UI, sans-serif`;
@@ -1344,7 +1374,7 @@ function drawIqPlot(points) {
   if (!points || points.length === 0) {
     ctx.fillStyle = "#93a4b8";
     ctx.textAlign = "center";
-    ctx.fillText("Waiting for a sweep…", size / 2, size / 2);
+    ctx.fillText("Waiting for a sweep…", width / 2, height / 2);
     return;
   }
 
@@ -1354,11 +1384,14 @@ function drawIqPlot(points) {
     half = Math.max(half, Math.abs(p.i - center.i), Math.abs(p.q - center.q));
   }
   half *= 1.08;
-  const mid = pad + plot / 2;
-  const toX = (i) => mid + ((i - center.i) / half) * (plot / 2);
-  const toY = (q) => mid - ((q - center.q) / half) * (plot / 2);
-  const originX = mid;
-  const originY = mid;
+  const left = ox + pad;
+  const top = oy + pad;
+  const midX = left + plot / 2;
+  const midY = top + plot / 2;
+  const toX = (i) => midX + ((i - center.i) / half) * (plot / 2);
+  const toY = (q) => midY - ((q - center.q) / half) * (plot / 2);
+  const originX = midX;
+  const originY = midY;
   const iMin = center.i - half;
   const iMax = center.i + half;
   const qMin = center.q - half;
@@ -1366,26 +1399,26 @@ function drawIqPlot(points) {
 
   ctx.strokeStyle = "#2a3b4d";
   ctx.beginPath();
-  ctx.moveTo(pad, originY);
-  ctx.lineTo(pad + plot, originY);
-  ctx.moveTo(originX, pad);
-  ctx.lineTo(originX, pad + plot);
+  ctx.moveTo(left, originY);
+  ctx.lineTo(left + plot, originY);
+  ctx.moveTo(originX, top);
+  ctx.lineTo(originX, top + plot);
   ctx.stroke();
 
   const tick = (value) => String(Math.round(value));
   ctx.fillStyle = "#93a4b8";
   ctx.textAlign = "center";
-  ctx.fillText("I", pad + plot - 8 * dpr, originY - 8 * dpr);
+  ctx.fillText("I", left + plot - 8 * dpr, originY - 8 * dpr);
   ctx.textAlign = "left";
-  ctx.fillText("Q", originX + 8 * dpr, pad + 12 * dpr);
+  ctx.fillText("Q", originX + 8 * dpr, top + 12 * dpr);
   ctx.textAlign = "center";
-  ctx.fillText(tick(iMin), pad, originY + 14 * dpr);
+  ctx.fillText(tick(iMin), left, originY + 14 * dpr);
   ctx.fillText(tick(center.i), originX, originY + 14 * dpr);
-  ctx.fillText(tick(iMax), pad + plot, originY + 14 * dpr);
+  ctx.fillText(tick(iMax), left + plot, originY + 14 * dpr);
   ctx.textAlign = "right";
-  ctx.fillText(tick(qMax), originX - 6 * dpr, pad + 10 * dpr);
+  ctx.fillText(tick(qMax), originX - 6 * dpr, top + 10 * dpr);
   ctx.fillText(tick(center.q), originX - 6 * dpr, originY);
-  ctx.fillText(tick(qMin), originX - 6 * dpr, pad + plot);
+  ctx.fillText(tick(qMin), originX - 6 * dpr, top + plot);
 
   const selected = selectedFreqMhz();
   const r = Math.max(1.1 * dpr, 1.6);
@@ -1419,6 +1452,9 @@ window.addEventListener("resize", () => {
 
 if (window.ResizeObserver && iqPlot.parentElement) {
   new ResizeObserver(() => redrawPlot()).observe(iqPlot.parentElement);
+}
+if (window.ResizeObserver && accelSidePlot && accelSidePlot.parentElement) {
+  new ResizeObserver(() => redrawPlot()).observe(accelSidePlot.parentElement);
 }
 
 async function toggleLooking() {
@@ -1557,7 +1593,7 @@ function handleCaptureMessage(event) {
     appendPpgSamples(message.payload.samples || []);
   }
   if (message.event === "accel") {
-    setAccelMeta(message.payload);
+    if (plotMode === "accel") setAccelMeta(message.payload);
     appendAccelSamples(message.payload.samples || []);
   }
 }

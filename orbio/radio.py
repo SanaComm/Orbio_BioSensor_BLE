@@ -343,7 +343,7 @@ class SimulatorBackend:
         self._streaming = False
         self._stream_mode = "sweep"
         self._fw = 1
-        self._params = "10,30,600"
+        self._params = "10,30,600,100"
         self._ppg_tick = 0
         self._accel_tick = 0
 
@@ -421,6 +421,23 @@ class SimulatorBackend:
     async def read_parameters(self) -> bytes:
         return self._params.encode("ascii")
 
+    async def _emit_simulated_frame(self, payload: bytes, packet_type: int | None) -> None:
+        if self._callback is None:
+            return
+        if packet_type is None:
+            header = encode_sweep_header(timestamp=int(time.time()) & 0xFFFFFFFF)
+        else:
+            header = encode_frame_header(
+                packet_type,
+                timestamp=int(time.time()) & 0xFFFFFFFF,
+                payload_bytes=len(payload),
+            )
+        frame = header + payload
+        for start in range(0, len(frame), MAX_NOTIFY_BYTES):
+            chunk = frame[start : start + MAX_NOTIFY_BYTES]
+            self._callback(0, bytearray(chunk))
+            await asyncio.sleep(0.01)
+
     async def _maybe_stream(self) -> None:
         try:
             while True:
@@ -431,27 +448,20 @@ class SimulatorBackend:
                     if mode == "ppg":
                         payload = _fake_ppg(self._ppg_tick)
                         self._ppg_tick += 1
-                        packet_type = PACKET_TYPE_PPG
+                        await self._emit_simulated_frame(payload, PACKET_TYPE_PPG)
+                        accel = _fake_accel(self._accel_tick)
+                        self._accel_tick += 1
+                        await self._emit_simulated_frame(accel, PACKET_TYPE_ACCEL)
                     elif mode == "accel":
                         payload = _fake_accel(self._accel_tick)
                         self._accel_tick += 1
-                        packet_type = PACKET_TYPE_ACCEL
+                        await self._emit_simulated_frame(payload, PACKET_TYPE_ACCEL)
                     else:
                         payload = _fake_sweep()
-                        packet_type = None
-                    if packet_type is None:
-                        header = encode_sweep_header(timestamp=int(time.time()) & 0xFFFFFFFF)
-                    else:
-                        header = encode_frame_header(
-                            packet_type,
-                            timestamp=int(time.time()) & 0xFFFFFFFF,
-                            payload_bytes=len(payload),
-                        )
-                    frame = header + payload
-                    for start in range(0, len(frame), MAX_NOTIFY_BYTES):
-                        chunk = frame[start : start + MAX_NOTIFY_BYTES]
-                        self._callback(0, bytearray(chunk))
-                        await asyncio.sleep(0.01)
+                        await self._emit_simulated_frame(payload, None)
+                        accel = _fake_accel(self._accel_tick)
+                        self._accel_tick += 1
+                        await self._emit_simulated_frame(accel, PACKET_TYPE_ACCEL)
         except asyncio.CancelledError:
             return
 
