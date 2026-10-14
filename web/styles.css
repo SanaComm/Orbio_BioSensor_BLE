@@ -547,6 +547,33 @@ button:disabled {
   white-space: nowrap;
 }
 
+@keyframes battery-flash {
+  0%,
+  100% {
+    color: #ff3b3b;
+    opacity: 1;
+  }
+  50% {
+    color: #ff8a8a;
+    opacity: 0.4;
+  }
+}
+
+.meta dt.battery-warn,
+.meta dd.battery-warn {
+  color: #ff3b3b;
+  font-weight: 700;
+  animation: battery-flash 0.85s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .meta dt.battery-warn,
+  .meta dd.battery-warn {
+    animation: none;
+    opacity: 1;
+  }
+}
+
 .meter {
   height: 12px;
   background: #0f1720;

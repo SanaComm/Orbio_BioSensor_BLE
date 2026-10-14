@@ -120,12 +120,22 @@ function setAccelMeta(accel) {
   ]);
 }
 
-function formatBattery(parameters) {
+const BATTERY_WARN_PCT = 10;
+let batteryWarnLatched = false;
+let audioCtx = null;
+
+function batteryPercent(parameters) {
   if (!parameters) return null;
   const raw = parameters.battery != null && parameters.battery !== "" ? parameters.battery : null;
   const text = raw != null ? String(raw) : String(parameters.raw || "").split(",").pop();
   const value = Number(String(text || "").trim());
   if (!Number.isFinite(value) || value < 0 || value > 100) return null;
+  return value;
+}
+
+function formatBattery(parameters) {
+  const value = batteryPercent(parameters);
+  if (value == null) return null;
   return Number.isInteger(value) ? `${value}%` : `${value.toFixed(1)}%`;
 }
 
@@ -135,10 +145,60 @@ function setMeta(target, entries) {
     if (value === undefined || value === null || value === "") continue;
     const dt = document.createElement("dt");
     const dd = document.createElement("dd");
+    const slug = String(key).toLowerCase().replace(/\s+/g, "-");
     dt.textContent = key;
     dd.textContent = value;
+    dt.dataset.key = slug;
+    dd.dataset.key = slug;
     target.append(dt, dd);
   }
+}
+
+function ensureAudio() {
+  const Ctor = window.AudioContext || window.webkitAudioContext;
+  if (!Ctor) return null;
+  if (!audioCtx) audioCtx = new Ctor();
+  if (audioCtx.state === "suspended") audioCtx.resume();
+  return audioCtx;
+}
+
+document.addEventListener("pointerdown", () => ensureAudio());
+
+function playBatteryChime() {
+  const ctx = ensureAudio();
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  const ding = (freq, start, dur) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(freq, start);
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(0.22, start + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(start);
+    osc.stop(start + dur + 0.05);
+  };
+  ding(1046.5, now, 0.22);
+  ding(784.0, now + 0.24, 0.38);
+}
+
+function applyBatteryWarning(status) {
+  const pct = batteryPercent(status.parameters);
+  const warn = Boolean(status.connected && pct != null && pct <= BATTERY_WARN_PCT);
+  deviceMeta.querySelectorAll('[data-key="battery"]').forEach((el) => {
+    el.classList.toggle("battery-warn", warn);
+  });
+  if (!status.connected || !warn) {
+    batteryWarnLatched = false;
+    return;
+  }
+  if (batteryWarnLatched) return;
+  batteryWarnLatched = true;
+  playBatteryChime();
+  log(`Battery warning: ${formatBattery(status.parameters)}`);
 }
 
 let uiConnected = false;
@@ -219,6 +279,7 @@ function renderStatus(status) {
     ["Parameters", status.parameters ? status.parameters.raw : null],
     ["Battery", formatBattery(status.parameters)],
   ]);
+  applyBatteryWarning(status);
   if (streamCounts) {
     setMeta(streamCounts, [
       ["Sweeps saved", status.sweep_count],
