@@ -25,6 +25,8 @@ from orbio.radio import BleakBackend, DeviceInfo, RadioBackend, SimulatorBackend
 
 EventHandler = Callable[[str, dict[str, Any]], Awaitable[None] | None]
 
+DEVICE_POLL_S = 60.0
+
 
 @dataclass
 class SessionStatus:
@@ -70,6 +72,7 @@ class CaptureSession:
         self._connecting = False
         self._expect_disconnect = False
         self._handling_remote_drop = False
+        self._device_poll_task: asyncio.Task | None = None
         self.assembler.allow_headerless = False
         if hasattr(self.backend, "on_disconnected"):
             self.backend.on_disconnected = self._on_remote_disconnected
@@ -367,6 +370,7 @@ class CaptureSession:
                 )
             },
         )
+        self._start_device_poll()
         await self._emit("status", self.public_status())
 
     def _on_remote_disconnected(self) -> None:
@@ -408,6 +412,7 @@ class CaptureSession:
 
     async def disconnect(self, resume_watch: bool = True) -> None:
         self._expect_disconnect = True
+        self._stop_device_poll()
         try:
             if self.status.notifications:
                 await self.backend.stop_notify()
@@ -489,6 +494,57 @@ class CaptureSession:
             self.status.connection_latency = latency
             changed = True
         return changed
+
+    def _stop_device_poll(self) -> None:
+        task = self._device_poll_task
+        self._device_poll_task = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    def _start_device_poll(self) -> None:
+        self._stop_device_poll()
+        try:
+            loop = self._loop or asyncio.get_running_loop()
+            self._loop = loop
+        except RuntimeError:
+            return
+        self._device_poll_task = loop.create_task(self._poll_device_status())
+
+    async def _poll_device_status(self) -> None:
+        try:
+            while self.status.connected:
+                await asyncio.sleep(DEVICE_POLL_S)
+                if not self.status.connected or self._expect_disconnect:
+                    return
+                await self._refresh_device_status()
+        except asyncio.CancelledError:
+            return
+
+    async def _refresh_device_status(self) -> None:
+        if not self.status.connected:
+            return
+        previous = self.status.parameters
+        try:
+            params_raw = await self.backend.read_parameters()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            await self._emit("log", {"message": f"Device status read failed: {exc}"})
+            return
+        parsed = parse_report_parameters(params_raw)
+        self.status.parameters = parsed
+        reader = getattr(self.backend, "read_connection_info", None)
+        if callable(reader):
+            try:
+                self._apply_connection_info(reader())
+            except Exception:
+                pass
+        await self._emit("status", self.public_status())
+        prev_raw = (previous or {}).get("raw")
+        if parsed.get("raw") != prev_raw:
+            battery = parsed.get("battery")
+            extra = f"  Battery {battery}%" if battery is not None else ""
+            await self._emit("log", {"message": f"Parameters: {parsed.get('raw', '')}{extra}"})
 
     def _connection_info_log(self) -> str:
         parts: list[str] = []
